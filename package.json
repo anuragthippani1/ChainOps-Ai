@@ -1,0 +1,18 @@
+{
+  "name": "chainops-ai",
+  "version": "1.0.0",
+  "description": "ChainOps AI - Multi-Agent Supply Chain Risk Intelligence Platform",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd backend && (test -d venv && ./venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 || python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000)",
+    "client": "cd frontend && npm start",
+    "install-all": "npm install && cd frontend && npm install && cd ../backend && pip install -r requirements.txt"
+  },
+  "keywords": ["supply-chain", "risk-intelligence", "ai-agents", "react", "fastapi"],
+  "author": "ChainOps AI Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
