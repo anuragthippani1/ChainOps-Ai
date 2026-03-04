@@ -99,6 +99,10 @@ OPENAI_API_KEY=your-openai-key
 NEWSDATA_API_KEY=your-newsdata-key
 GNEWS_API_KEY=your-gnews-key
 
+# Real-time supply chain news (NewsAPI, Mediastack - fetch every 10 min)
+NEWSAPI_KEY=your-newsapi-key
+MEDIASTACK_API_KEY=your-mediastack-key
+
 # MongoDB (optional, uses file fallback)
 MONGODB_URI=mongodb://localhost:27017/chainops_ai
 ```

@@ -37,9 +37,12 @@ COUNTRY_TO_ISO = {
 
 class PoliticalRiskAgent:
     def __init__(self):
-        # Free news API endpoints
+        # News API endpoints
+        self.newsapi_key = os.getenv("NEWSAPI_KEY")
         self.newsdata_api_key = os.getenv("NEWSDATA_API_KEY", "your-newsdata-key")
         self.gnews_api_key = os.getenv("GNEWS_API_KEY", "your-gnews-key")
+        # Keep provider calls responsive for dashboard requests.
+        self.http_timeout = aiohttp.ClientTimeout(total=3)
         
         # Risk keywords to look for in news
         self.risk_keywords = [
@@ -51,17 +54,14 @@ class PoliticalRiskAgent:
     
     async def analyze_risks(self, countries: List[str]) -> List[PoliticalRisk]:
         """Analyze political risks for given countries"""
-        all_risks = []
-        
-        for country in countries:
+        async def _analyze_country(country: str) -> List[PoliticalRisk]:
             try:
                 # Fetch news for each country
                 news_articles = await self._fetch_news_for_country(country)
-                
+
                 # Analyze articles for risk indicators
-                country_risks = await self._analyze_articles_for_risks(news_articles, country)
-                all_risks.extend(country_risks)
-                
+                return await self._analyze_articles_for_risks(news_articles, country)
+
             except Exception as e:
                 print(f"Error analyzing risks for {country}: {str(e)}")
                 # Add a default risk entry if analysis fails
@@ -74,17 +74,30 @@ class PoliticalRiskAgent:
                     source_title="System Error",
                     source_url=""
                 )
-                all_risks.append(default_risk)
-        
+                return [default_risk]
+
+        results = await asyncio.gather(*[_analyze_country(country) for country in countries])
+        all_risks: List[PoliticalRisk] = []
+        for country_risks in results:
+            all_risks.extend(country_risks)
         return all_risks
     
     async def _fetch_news_for_country(self, country: str) -> List[Dict[str, Any]]:
         """Fetch news articles for a specific country"""
         articles = []
-        
-        # Try NewsData.io first (free tier)
+
+        # Try NewsAPI first
+        try:
+            newsapi_articles = await self._fetch_from_newsapi(country)
+            print(f"NewsAPI ({country}): {len(newsapi_articles)} articles")
+            articles.extend(newsapi_articles)
+        except Exception as e:
+            print(f"NewsAPI error for {country}: {str(e)}")
+
+        # Try NewsData.io second
         try:
             newsdata_articles = await self._fetch_from_newsdata(country)
+            print(f"NewsData ({country}): {len(newsdata_articles)} articles")
             articles.extend(newsdata_articles)
         except Exception as e:
             print(f"NewsData.io error for {country}: {str(e)}")
@@ -92,15 +105,49 @@ class PoliticalRiskAgent:
         # Try GNews as backup
         try:
             gnews_articles = await self._fetch_from_gnews(country)
+            print(f"GNews ({country}): {len(gnews_articles)} articles")
             articles.extend(gnews_articles)
         except Exception as e:
             print(f"GNews error for {country}: {str(e)}")
         
-        # If both APIs fail, return sample data
+        # If all APIs fail, return sample data
         if not articles:
             articles = self._get_sample_news_data(country)
+            print(f"Sample fallback ({country}): {len(articles)} articles")
         
         return articles
+
+    async def _fetch_from_newsapi(self, country: str) -> List[Dict[str, Any]]:
+        """Fetch news from NewsAPI.org."""
+        if not self.newsapi_key:
+            return []
+
+        url = "https://newsapi.org/v2/everything"
+        query = (
+            f"{country} supply chain OR shipping OR port congestion OR "
+            "trade sanctions OR logistics disruption OR oil supply OR maritime conflict"
+        )
+        params = {
+            "q": query,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": 5,
+            "apiKey": self.newsapi_key,
+        }
+
+        async with aiohttp.ClientSession(timeout=self.http_timeout) as session:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    articles = data.get("articles", [])
+                    # Normalize keys expected by downstream processing.
+                    for article in articles:
+                        if article.get("publishedAt") and "pubDate" not in article:
+                            article["pubDate"] = article.get("publishedAt")
+                        if article.get("url") and "link" not in article:
+                            article["link"] = article.get("url")
+                    return articles
+                raise Exception(f"NewsAPI error: {response.status}")
     
     async def _fetch_from_newsdata(self, country: str) -> List[Dict[str, Any]]:
         """Fetch news from NewsData.io API"""
@@ -113,7 +160,7 @@ class PoliticalRiskAgent:
             "size": 10
         }
         
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self.http_timeout) as session:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -141,7 +188,7 @@ class PoliticalRiskAgent:
             "max": 10
         }
         
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self.http_timeout) as session:
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()

@@ -17,6 +17,7 @@ export const DashboardProvider = ({ children }) => {
     worldRiskData: {},
     politicalRisks: [],
     scheduleRisks: [],
+    disruptionAlerts: [],
     loading: true,
     error: null,
   });
@@ -35,24 +36,28 @@ export const DashboardProvider = ({ children }) => {
     setSessionId(newSessionId);
   }, []);
 
-  // Load dashboard data (backend returns static data quickly; 15s timeout is a safety net)
+  // Load dashboard data (dynamic political risk providers may need extra time)
   const loadDashboardData = async () => {
     try {
       setDashboardData((prev) => ({ ...prev, loading: true, error: null }));
       const apiUrl = `${config.API_URL}/api/dashboard`;
-      const response = await axios.get(apiUrl, { timeout: 15000 });
+      const response = await axios.get(apiUrl, { timeout: 30000 });
 
       setDashboardData({
         worldRiskData: response.data.world_risk_data || {},
         politicalRisks: response.data.political_risks || [],
         scheduleRisks: response.data.schedule_risks || [],
+        disruptionAlerts: response.data.disruption_alerts || [],
         loading: false,
         error: null,
       });
     } catch (error) {
       console.error("Error loading dashboard data:", error);
-      const isNetwork = error.code === "ECONNREFUSED" || error.message === "Network Error" || error.message.includes("timeout");
-      const message = isNetwork
+      const isTimeout = error.message?.includes("timeout");
+      const isNetwork = error.code === "ECONNREFUSED" || error.message === "Network Error";
+      const message = isTimeout
+        ? `Dashboard request timed out after 30s. The backend is running but upstream news providers may be slow. Please retry.`
+        : isNetwork
         ? `Cannot reach the backend at ${config.API_URL}. Start it with: npm run server (or npm run dev from project root).`
         : `Failed to load dashboard: ${error.message}`;
       setDashboardData((prev) => ({

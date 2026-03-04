@@ -3,6 +3,7 @@ import { useDashboard } from "../context/DashboardContext";
 import WorldMap from "./WorldMap";
 import RiskTables from "./RiskTables";
 import RiskCharts from "./RiskCharts";
+import DisruptionAlerts from "./DisruptionAlerts";
 import LoadingSpinner from "./LoadingSpinner";
 import {
   TrendingUp,
@@ -280,6 +281,9 @@ const Dashboard = () => {
               <WorldMap worldRiskData={dashboardData.worldRiskData} />
             </div>
           </div>
+
+          {/* Latest Disruption Alerts - Real-time supply chain news */}
+          <DisruptionAlerts alerts={dashboardData.disruptionAlerts} />
 
           {/* Risk Tables - Modern Layout */}
           <RiskTables

@@ -67,6 +67,22 @@ class Session(BaseModel):
     report_count: int = 0
     last_activity: Optional[datetime] = None
 
+class SupplyChainNewsAlert(BaseModel):
+    """Real-time supply chain disruption news alert from live APIs."""
+    alert_id: str
+    title: str
+    summary: str  # AI-generated summary
+    source_url: str
+    source_name: str
+    published_at: str  # ISO timestamp
+    risk_score: int  # 1-5
+    risk_severity: str  # "low", "medium", "high", "critical"
+    risk_signals: List[str]  # e.g. ["port closure", "strike", "delay"]
+    category: str  # maritime, freight, port disruption, customs delay
+    country: Optional[str] = None  # Extracted from article
+    city: Optional[str] = None
+    port: Optional[str] = None
+
 class SessionCreate(BaseModel):
     # Make fields optional so backend can auto-generate when omitted
     name: Optional[str] = None

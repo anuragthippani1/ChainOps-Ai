@@ -13,6 +13,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
   const countryNameMapping = {
     // Americas
     "United States of America": "United States",
+    US: "United States",
     USA: "United States",
 
     // Europe
@@ -24,6 +25,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
     // Asia
     "People's Republic of China": "China",
     "Republic of Korea": "South Korea",
+    "Korea, Rep.": "South Korea",
     "S. Korea": "South Korea",
     Korea: "South Korea",
     "Dem. Rep. Korea": "North Korea",
@@ -33,6 +35,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
     "Islamic Republic of Iran": "Iran",
     "Syrian Arab Republic": "Syria",
     "Viet Nam": "Vietnam",
+    "Brunei Darussalam": "Brunei",
     "Myanmar (Burma)": "Myanmar",
     Burma: "Myanmar",
     "Lao PDR": "Laos",
@@ -50,9 +53,14 @@ const WorldMap = ({ worldRiskData = {} }) => {
     "Eq. Guinea": "Equatorial Guinea",
     "Equatorial Guinea": "Equatorial Guinea",
     "Côte d'Ivoire": "Ivory Coast",
+    "Cabo Verde": "Cape Verde",
+    eSwatini: "Eswatini",
     "Ivory Coast": "Ivory Coast",
 
     // Middle East
+    "United Arab Emirates": "United Arab Emirates",
+    "U.A.E.": "United Arab Emirates",
+    UAE: "United Arab Emirates",
     Palestine: "Palestine",
     "West Bank": "Palestine",
     Gaza: "Palestine",
@@ -119,9 +127,11 @@ const WorldMap = ({ worldRiskData = {} }) => {
     const riskData = getCountryRiskData(countryName);
 
     if (riskData && countryName !== "Unknown Region") {
-      const riskLevel = riskData.risk_level;
+      const riskLevel = riskData.risk_level ?? 0;
       const riskColor = getRiskColor(riskLevel);
-      const riskLabel = getRiskLabel(riskLevel);
+      const riskLabel = riskData.risk_label || getRiskLabel(riskLevel);
+      const disruptionCount = riskData.disruption_count ?? 0;
+      const latestDisruption = riskData.latest_disruption || "None";
 
       setTooltipContent(`
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-300 dark:border-gray-600 p-3 max-w-xs">
@@ -129,10 +139,21 @@ const WorldMap = ({ worldRiskData = {} }) => {
             <div class="w-3 h-3 rounded-full" style="background-color: ${riskColor}"></div>
             <div class="font-bold text-gray-900 dark:text-gray-100 text-sm">${countryName}</div>
           </div>
-          <div>
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="background-color: ${riskColor}; color: white;">
-              ${riskLabel}
-            </span>
+          <div class="space-y-1.5 text-xs">
+            <div>
+              <span class="text-gray-500 dark:text-gray-400">Risk level:</span>
+              <span class="ml-1 inline-flex px-2 py-0.5 rounded font-medium" style="background-color: ${riskColor}; color: white;">
+                ${riskLabel}
+              </span>
+            </div>
+            <div>
+              <span class="text-gray-500 dark:text-gray-400">Disruptions detected:</span>
+              <span class="ml-1 font-medium text-gray-900 dark:text-gray-100">${disruptionCount}</span>
+            </div>
+            <div>
+              <span class="text-gray-500 dark:text-gray-400">Latest:</span>
+              <span class="ml-1 text-gray-700 dark:text-gray-300 line-clamp-2">${latestDisruption}</span>
+            </div>
           </div>
         </div>
       `);
@@ -222,10 +243,10 @@ const WorldMap = ({ worldRiskData = {} }) => {
         />
       )}
 
-      {/* Simple Legend */}
+      {/* Legend */}
       <div className="mt-6 bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-          Risk Levels
+          Logistics Disruption Risk
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
@@ -272,7 +293,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
       <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
         <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
           <div className="text-xs font-medium text-gray-600 dark:text-gray-400">
-            Countries Monitored
+            Total Regions
           </div>
           <div className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">
             {Object.keys(worldRiskData).length}

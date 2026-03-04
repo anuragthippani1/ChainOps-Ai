@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 # from sse_starlette.sse import EventSourceResponse  # Temporarily disabled
 from dotenv import load_dotenv
 import uvicorn
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncio
 import json
 from datetime import datetime
@@ -18,6 +18,8 @@ from agents.reporting_agent import ReportingAgent
 from agents.route_planner_agent import RoutePlannerAgent
 from database.mongodb import MongoDBClient
 from models.schemas import QueryRequest, RiskReport, PoliticalRisk, ScheduleRisk, Session, SessionCreate, SessionUpdate
+from services.supply_chain_news_service import SupplyChainNewsService
+from data.logistics_regions import build_world_risk_from_alerts
 
 load_dotenv()  # load variables from backend/.env if present
 
@@ -45,9 +47,37 @@ route_planner_agent = RoutePlannerAgent()
 # Initialize database
 db_client = MongoDBClient()
 
+# Real-time supply chain news service (fetch every 10 min)
+news_service = SupplyChainNewsService(db_client=db_client)
+_news_scheduler_task = None
+_disruption_cache: Dict[str, Any] = {"alerts": [], "ts": 0}
+_DISRUPTION_CACHE_TTL = 60  # seconds
+DEFAULT_DASHBOARD_POLITICAL_COUNTRIES = [
+    "Russia",
+    "China",
+    "Iran",
+    "Pakistan",
+    "Venezuela",
+    "India",
+    "United States",
+    "Saudi Arabia",
+    "Germany",
+    "Japan",
+]
+
 latest_world_data: Dict[str, Any] = {"world_risk_data": {}, "political_risks": [], "schedule_risks": []}
 _subscribers: set = set()
 _poll_task = None
+
+async def _news_fetch_loop():
+    """Fetch supply chain news every 10 minutes, filter keywords, store in MongoDB."""
+    while True:
+        try:
+            await news_service.run_fetch_and_store()
+        except Exception as e:
+            print(f"News fetch error: {e}")
+        await asyncio.sleep(600)  # 10 minutes
+
 
 async def _poll_world_data():
     global latest_world_data
@@ -72,15 +102,29 @@ async def _poll_world_data():
 @app.on_event("startup")
 async def startup_event():
     await db_client.connect()
-    # global _poll_task
-    # _poll_task = asyncio.create_task(_poll_world_data())  # Disabled for now
+    global _news_scheduler_task
+    _news_scheduler_task = asyncio.create_task(_news_fetch_loop())
+    # Trigger initial fetch after 5 seconds (non-blocking)
+    asyncio.create_task(_run_initial_news_fetch())
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await db_client.disconnect()
-    # global _poll_task
-    # if _poll_task:
-    #     _poll_task.cancel()
+    global _news_scheduler_task
+    if _news_scheduler_task:
+        _news_scheduler_task.cancel()
+        try:
+            await _news_scheduler_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _run_initial_news_fetch():
+    await asyncio.sleep(5)
+    try:
+        await news_service.run_fetch_and_store()
+    except Exception as e:
+        print(f"Initial news fetch: {e}")
 
 @app.get("/")
 async def root():
@@ -352,17 +396,118 @@ DASHBOARD_COUNTRIES_AFRICA = [
 ]
 
 
-def _dashboard_static_response(static_world: Dict[str, Any]) -> Dict[str, Any]:
-    """Return static dashboard payload when live fetch times out or fails."""
-    return {
-        "world_risk_data": static_world,
-        "political_risks": [
-            {"country": "Russia", "risk_type": "Geopolitical", "likelihood_score": 4, "reasoning": "Active military conflict in Ukraine with ongoing international sanctions.", "publication_date": datetime.utcnow().isoformat(), "source_title": "", "source_url": ""},
-            {"country": "China", "risk_type": "Trade Policy", "likelihood_score": 3, "reasoning": "Ongoing trade tensions with Western countries.", "publication_date": datetime.utcnow().isoformat(), "source_title": "", "source_url": ""},
-            {"country": "Iran", "risk_type": "Sanctions", "likelihood_score": 4, "reasoning": "Comprehensive international sanctions.", "publication_date": datetime.utcnow().isoformat(), "source_title": "", "source_url": ""},
-            {"country": "Venezuela", "risk_type": "Political", "likelihood_score": 4, "reasoning": "Political and economic crisis.", "publication_date": datetime.utcnow().isoformat(), "source_title": "", "source_url": ""},
-            {"country": "Pakistan", "risk_type": "Political", "likelihood_score": 3, "reasoning": "Political instability affecting trade.", "publication_date": datetime.utcnow().isoformat(), "source_title": "", "source_url": ""},
-        ],
+# Only show alerts with these categories (logistics/shipment only)
+ALLOWED_DISRUPTION_CATEGORIES = {"maritime", "freight", "port disruption", "customs delay"}
+
+
+def _get_disruption_alerts_cached() -> List[Dict[str, Any]]:
+    """Get disruption alerts with 60s cache to respect API limits."""
+    global _disruption_cache
+    now = datetime.utcnow().timestamp()
+    if _disruption_cache["alerts"] and (now - _disruption_cache["ts"]) < _DISRUPTION_CACHE_TTL:
+        return _disruption_cache["alerts"]
+    return []
+
+
+async def _refresh_disruption_cache():
+    """Refresh disruption alerts from DB (last 24h). Only maritime, freight, port, customs."""
+    global _disruption_cache
+    try:
+        raw = await db_client.get_supply_chain_news_last_24h()
+        alerts = [a for a in raw if (a.get("category") or "").lower() in ALLOWED_DISRUPTION_CATEGORIES]
+        _disruption_cache["alerts"] = alerts
+        _disruption_cache["ts"] = datetime.utcnow().timestamp()
+    except Exception as e:
+        print(f"Error refreshing disruption cache: {e}")
+
+
+async def _get_dashboard_political_risks(countries: List[str]) -> List[Dict[str, Any]]:
+    """
+    Generate political risks for dashboard countries.
+    Falls back to sample-news based generation if the main analysis fails.
+    """
+    selected_countries = countries or DEFAULT_DASHBOARD_POLITICAL_COUNTRIES
+    try:
+        risks = await political_risk_agent.analyze_risks(selected_countries)
+        if risks:
+            return [_serialize_risk(r) for r in risks]
+    except Exception as e:
+        print(f"Dashboard political risk generation failed: {e}")
+
+    fallback_risks: List[PoliticalRisk] = []
+    for country in selected_countries:
+        try:
+            sample_articles = political_risk_agent._get_sample_news_data(country)
+            sample_country_risks = await political_risk_agent._analyze_articles_for_risks(sample_articles, country)
+            if sample_country_risks:
+                fallback_risks.extend(sample_country_risks)
+            else:
+                fallback_risks.append(
+                    PoliticalRisk(
+                        country=country,
+                        risk_type="General Economic Risk",
+                        likelihood_score=1,
+                        reasoning=f"Sample monitoring data used for {country}.",
+                        publication_date=datetime.utcnow().isoformat(),
+                        source_title="Sample Monitoring",
+                        source_url="",
+                    )
+                )
+        except Exception as fallback_error:
+            print(f"Fallback political risk generation failed for {country}: {fallback_error}")
+            fallback_risks.append(
+                PoliticalRisk(
+                    country=country,
+                    risk_type="General Economic Risk",
+                    likelihood_score=1,
+                    reasoning=f"Fallback monitoring used due to data fetch error for {country}.",
+                    publication_date=datetime.utcnow().isoformat(),
+                    source_title="Fallback Monitoring",
+                    source_url="",
+                )
+            )
+
+    return [_serialize_risk(r) for r in fallback_risks]
+
+
+@app.get("/api/news/disruptions")
+async def get_disruption_alerts():
+    """
+    Latest supply chain disruption alerts from last 24 hours.
+    Cached for 60 seconds to respect API limits.
+    Includes: summary, source link, timestamp, risk severity.
+    """
+    try:
+        cached = _get_disruption_alerts_cached()
+        if cached:
+            return {"alerts": cached, "cached": True, "count": len(cached)}
+
+        await _refresh_disruption_cache()
+        return {"alerts": _disruption_cache["alerts"], "cached": False, "count": len(_disruption_cache["alerts"])}
+    except Exception as e:
+        return {"alerts": [], "cached": False, "count": 0, "error": str(e)}
+
+
+@app.post("/api/news/refresh")
+async def trigger_news_refresh():
+    """Manually trigger a news fetch (respects rate limits)."""
+    try:
+        count = await news_service.run_fetch_and_store()
+        await _refresh_disruption_cache()
+        return {"status": "ok", "stored": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _dashboard_static_response(
+    disruption_alerts: Optional[List[Dict]] = None,
+    political_risks: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Return dashboard payload. world_risk_data = logistics disruptions + political overlay."""
+    world_risk_data = build_world_risk_from_alerts(disruption_alerts or [], political_risks or [])
+    payload = {
+        "world_risk_data": world_risk_data,
+        "political_risks": political_risks or [],
         "schedule_risks": [
             {"equipment_id": "EQ001", "country": "China", "original_delivery_date": "2024-02-15", "current_delivery_date": "2024-02-28", "delay_days": 13, "risk_level": 2, "risk_factors": ["Port congestion", "Customs delays"]},
             {"equipment_id": "EQ002", "country": "Germany", "original_delivery_date": "2024-01-30", "current_delivery_date": "2024-01-30", "delay_days": 0, "risk_level": 1, "risk_factors": ["On time"]},
@@ -371,54 +516,19 @@ def _dashboard_static_response(static_world: Dict[str, Any]) -> Dict[str, Any]:
             {"equipment_id": "EQ005", "country": "Brazil", "original_delivery_date": "2024-01-15", "current_delivery_date": "2024-02-05", "delay_days": 21, "risk_level": 2, "risk_factors": ["Port strikes", "Bureaucratic delays"]},
         ],
     }
+    payload["disruption_alerts"] = disruption_alerts or []
+    return payload
 
 
 @app.get("/api/dashboard")
 async def get_dashboard_data():
-    # Static base for full map coverage; live data overwrites where available
-    static_world = {
-        "Russia": {"risk_level": 4, "type": "political", "details": "Active conflict in Ukraine, international sanctions", "risk_factors": ["Sanctions", "Geopolitical Risk", "War"]},
-        "Ukraine": {"risk_level": 4, "type": "political", "details": "Active military conflict", "risk_factors": ["Active Conflict", "Infrastructure Damage"]},
-        "Iran": {"risk_level": 4, "type": "political", "details": "International sanctions, regional tensions", "risk_factors": ["Sanctions", "Political Instability"]},
-        "North Korea": {"risk_level": 4, "type": "political", "details": "International isolation, sanctions", "risk_factors": ["Sanctions", "Political Risk"]},
-        "Syria": {"risk_level": 4, "type": "political", "details": "Ongoing civil conflict", "risk_factors": ["Conflict", "Political Instability"]},
-        "Afghanistan": {"risk_level": 4, "type": "political", "details": "Political instability, security concerns", "risk_factors": ["Political Instability", "Security Risk"]},
-        "Yemen": {"risk_level": 4, "type": "political", "details": "Civil conflict, humanitarian crisis", "risk_factors": ["Conflict", "Humanitarian Crisis"]},
-        "Myanmar": {"risk_level": 4, "type": "political", "details": "Political crisis, military rule", "risk_factors": ["Political Crisis", "Humanitarian Crisis"]},
-        "Venezuela": {"risk_level": 4, "type": "political", "details": "Political and economic crisis", "risk_factors": ["Political Crisis", "Economic Crisis"]},
-        "China": {"risk_level": 3, "type": "political", "details": "Trade tensions, regulatory changes", "risk_factors": ["Trade Policy", "Regulatory Changes"]},
-        "Somalia": {"risk_level": 3, "type": "political", "details": "Security concerns, piracy risk", "risk_factors": ["Security Risk", "Political Instability"]},
-        "Libya": {"risk_level": 3, "type": "political", "details": "Political instability", "risk_factors": ["Political Instability"]},
-        "Sudan": {"risk_level": 3, "type": "political", "details": "Political transition", "risk_factors": ["Political Transition"]},
-        "South Sudan": {"risk_level": 3, "type": "political", "details": "Internal conflict", "risk_factors": ["Internal Conflict"]},
-        "Central African Republic": {"risk_level": 3, "type": "political", "details": "Security challenges", "risk_factors": ["Security Risk"]},
-        "Mali": {"risk_level": 3, "type": "political", "details": "Security concerns", "risk_factors": ["Security Risk"]},
-        "Burkina Faso": {"risk_level": 3, "type": "political", "details": "Security challenges", "risk_factors": ["Security Risk"]},
-        "Niger": {"risk_level": 3, "type": "political", "details": "Regional instability", "risk_factors": ["Regional Instability"]},
-        "Pakistan": {"risk_level": 3, "type": "political", "details": "Political instability", "risk_factors": ["Political Instability"]},
-        "Lebanon": {"risk_level": 3, "type": "political", "details": "Economic crisis", "risk_factors": ["Economic Crisis"]},
-        "Belarus": {"risk_level": 3, "type": "political", "details": "Political tensions", "risk_factors": ["Political Tensions"]},
-        "Palestine": {"risk_level": 3, "type": "political", "details": "Political instability", "risk_factors": ["Political Instability"]},
-        "Haiti": {"risk_level": 3, "type": "political", "details": "Political instability, security concerns", "risk_factors": ["Political Instability", "Security Risk"]},
-        "United States": {"risk_level": 2, "type": "political", "details": "Policy uncertainty", "risk_factors": ["Policy Changes"]},
-        "Germany": {"risk_level": 2, "type": "schedule", "details": "Supply chain delays", "risk_factors": ["Logistics Delays"]},
-        "India": {"risk_level": 2, "type": "political", "details": "Regional tensions", "risk_factors": ["Regional Tensions"]},
-        "Bangladesh": {"risk_level": 2, "type": "political", "details": "Political uncertainty", "risk_factors": ["Political Uncertainty"]},
-        "Sri Lanka": {"risk_level": 2, "type": "political", "details": "Economic crisis", "risk_factors": ["Economic Crisis"]},
-        "Nigeria": {"risk_level": 2, "type": "political", "details": "Security concerns", "risk_factors": ["Security Risk"]},
-        "Japan": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "Brazil": {"risk_level": 2, "type": "political", "details": "Political uncertainty", "risk_factors": ["Political Uncertainty"]},
-        "Canada": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "United Kingdom": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "France": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "Australia": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "Singapore": {"risk_level": 1, "type": "political", "details": "Stable environment", "risk_factors": ["Stable"]},
-        "Mexico": {"risk_level": 2, "type": "political", "details": "Security concerns", "risk_factors": ["Security Risk"]},
-        "South Africa": {"risk_level": 2, "type": "political", "details": "Economic challenges", "risk_factors": ["Economic Challenges"]},
-    }
-    # Return static dashboard data immediately so the UI always loads quickly.
-    # Live data is used by /api/query and /api/report/combined when the user asks for reports.
-    return _dashboard_static_response(static_world)
+    """Dashboard: world_risk_data = full logistics regions + disruption overlays."""
+    disruption_alerts = _get_disruption_alerts_cached()
+    if not disruption_alerts:
+        await _refresh_disruption_cache()
+        disruption_alerts = _disruption_cache["alerts"]
+    political_risks = await _get_dashboard_political_risks(DEFAULT_DASHBOARD_POLITICAL_COUNTRIES)
+    return _dashboard_static_response(disruption_alerts, political_risks)
 
 
 # Session Management Endpoints

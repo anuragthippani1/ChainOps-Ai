@@ -27,6 +27,10 @@ class MongoDBClient:
             await self.db.sessions.create_index("session_id", unique=True)
             await self.db.sessions.create_index("is_active")
             await self.db.sessions.create_index("created_at")
+
+            # Supply chain news collection
+            await self.db.supply_chain_news.create_index("alert_id", unique=True)
+            await self.db.supply_chain_news.create_index("published_at")
             
             print("Connected to MongoDB successfully")
         except Exception as e:
@@ -360,6 +364,75 @@ class MongoDBClient:
             return True
         return False
     
+    # Supply chain news (real-time disruption alerts)
+    async def store_supply_chain_news(self, alert) -> bool:
+        """Store a supply chain news alert. Uses file fallback if MongoDB unavailable."""
+        try:
+            if self.db is not None:
+                doc = alert.dict() if hasattr(alert, "dict") else alert.model_dump()
+                await self.db.supply_chain_news.update_one(
+                    {"source_url": doc["source_url"]},
+                    {"$set": doc},
+                    upsert=True,
+                )
+                return True
+            await self._store_news_to_file(alert)
+            return True
+        except Exception as e:
+            print(f"Error storing supply chain news: {e}")
+            await self._store_news_to_file(alert)
+            return True
+
+    async def get_supply_chain_news_last_24h(self) -> List[Dict[str, Any]]:
+        """Get supply chain news from last 24 hours."""
+        from datetime import datetime, timedelta
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        cutoff_str = cutoff.isoformat()
+        try:
+            if self.db is not None:
+                cursor = self.db.supply_chain_news.find(
+                    {"published_at": {"$gte": cutoff_str}}
+                ).sort("published_at", -1).limit(50)
+                items = []
+                async for doc in cursor:
+                    doc.pop("_id", None)
+                    items.append(doc)
+                return items
+            return await self._get_news_from_files(cutoff_str)
+        except Exception as e:
+            print(f"Error getting supply chain news: {e}")
+            return await self._get_news_from_files(cutoff_str)
+
+    async def _store_news_to_file(self, alert):
+        import os
+        import hashlib
+        news_dir = os.path.join(os.path.dirname(__file__), "..", "news_data")
+        if not os.path.exists(news_dir):
+            os.makedirs(news_dir)
+        doc = alert.dict() if hasattr(alert, "dict") else alert.model_dump()
+        url = doc.get("source_url", "")
+        safe_id = hashlib.md5(url.encode() if url else b"").hexdigest()[:16]
+        filepath = os.path.join(news_dir, f"{safe_id}.json")
+        with open(filepath, "w") as f:
+            json.dump(doc, f, default=str, indent=2)
+
+    async def _get_news_from_files(self, cutoff_str: str) -> List[Dict[str, Any]]:
+        import os
+        import glob
+        news_dir = os.path.join(os.path.dirname(__file__), "..", "news_data")
+        items = []
+        if os.path.exists(news_dir):
+            for fp in glob.glob(os.path.join(news_dir, "*.json")):
+                try:
+                    with open(fp, "r") as f:
+                        doc = json.load(f)
+                        if doc.get("published_at", "") >= cutoff_str:
+                            items.append(doc)
+                except Exception:
+                    pass
+        items.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        return items[:50]
+
     async def _get_session_report_count_from_files(self, session_id: str) -> int:
         """Fallback: Get session report count from files"""
         import os
