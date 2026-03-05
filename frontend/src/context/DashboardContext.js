@@ -78,7 +78,9 @@ export const DashboardProvider = ({ children }) => {
       // Filter reports by current session if we have one
       if (sessionId) {
         const sessionReports = allReports.filter(
-          (report) => report.session_id === sessionId
+          (report) =>
+            report.session_id === sessionId ||
+            report.session_id === "default"
         );
         setReports(sessionReports);
       } else {
@@ -116,8 +118,12 @@ export const DashboardProvider = ({ children }) => {
 
       setChatMessages((prev) => [...prev, botMessage]);
 
-      // If it's a report, refresh the reports list
-      if (response.data.type === "report") {
+      // Refresh reports after route analyses or any response that created a report.
+      const hasGeneratedReport =
+        !!response.data.report ||
+        !!response.data.report_id ||
+        !!response.data.response?.data?.report_id;
+      if (response.data.type === "route" || hasGeneratedReport) {
         loadReports();
       }
 

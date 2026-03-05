@@ -14,8 +14,10 @@ import {
   Anchor,
 } from "lucide-react";
 import config from "../config";
+import { useDashboard } from "../context/DashboardContext";
 
 const MultiPortRoutePlanner = () => {
+  const { sessionId } = useDashboard();
   const [ports, setPorts] = useState(["", ""]);
   const [availablePorts, setAvailablePorts] = useState([]);
   const [optimization, setOptimization] = useState("balanced");
@@ -78,6 +80,7 @@ const MultiPortRoutePlanner = () => {
           body: JSON.stringify({
             ports: filledPorts,
             optimization: optimization,
+            session_id: sessionId,
           }),
         }
       );
@@ -104,6 +107,8 @@ const MultiPortRoutePlanner = () => {
 
   const getRiskColor = (riskLevel) => {
     switch (riskLevel) {
+      case "critical":
+        return "text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-300";
       case "high":
         return "text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400";
       case "medium":

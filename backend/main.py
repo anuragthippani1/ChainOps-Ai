@@ -7,6 +7,7 @@ import uvicorn
 from typing import List, Dict, Any, Optional
 import asyncio
 import json
+import re
 from datetime import datetime
 import uuid
 
@@ -19,7 +20,7 @@ from agents.route_planner_agent import RoutePlannerAgent
 from database.mongodb import MongoDBClient
 from models.schemas import QueryRequest, RiskReport, PoliticalRisk, ScheduleRisk, Session, SessionCreate, SessionUpdate
 from services.supply_chain_news_service import SupplyChainNewsService
-from data.logistics_regions import build_world_risk_from_alerts
+from data.logistics_regions import build_world_risk_from_alerts, get_canonical_country
 
 load_dotenv()  # load variables from backend/.env if present
 
@@ -167,149 +168,408 @@ async def reset_shipment_data():
     scheduler_agent.clear_custom_data()
     return {"status": "ok"}
 
+
+def _response_payload(session_id: str, response_type: str, message: str, data: Optional[Dict[str, Any]] = None, **extras):
+    payload = {
+        "session_id": session_id,
+        "type": response_type,
+        "response": {
+            "message": message,
+        },
+    }
+    if data is not None:
+        payload["response"]["data"] = data
+    if extras:
+        payload.update(extras)
+    return payload
+
+
+def _summarize_disruption_alerts(disruption_alerts: List[Dict[str, Any]]) -> tuple[str, Dict[str, Any]]:
+    alerts = disruption_alerts or []
+    if not alerts:
+        msg = (
+            "No major shipping disruptions are detected right now. "
+            "Core trade lanes look stable, but continue monitoring weather, congestion, and labor actions."
+        )
+        return msg, {
+            "affected_ports": [],
+            "affected_countries": [],
+            "disruption_types": [],
+            "estimated_impact": "low",
+            "disruption_count": 0,
+            "latest_alert": None,
+            "alerts": [],
+        }
+
+    affected_ports = sorted({a.get("port") for a in alerts if a.get("port")})
+    affected_countries = sorted({a.get("country") for a in alerts if a.get("country")})
+    disruption_types = sorted({
+        sig
+        for a in alerts
+        for sig in (a.get("risk_signals") or [])
+        if sig
+    })
+    risk_scores = [a.get("risk_score", 1) for a in alerts if isinstance(a.get("risk_score"), (int, float))]
+    max_score = max(risk_scores) if risk_scores else 1
+    avg_score = (sum(risk_scores) / len(risk_scores)) if risk_scores else 1
+    latest_alert = sorted(
+        alerts,
+        key=lambda a: str(a.get("published_at") or ""),
+        reverse=True,
+    )[0]
+
+    if max_score >= 4 or len(alerts) >= 10:
+        impact = "high"
+    elif max_score >= 3 or len(alerts) >= 5:
+        impact = "medium"
+    else:
+        impact = "low"
+
+    msg = (
+        "Current shipping disruptions detected across global supply chains.\n"
+        f"• Affected ports: {', '.join(affected_ports[:5]) if affected_ports else 'Not specified'}\n"
+        f"• Affected countries: {', '.join(affected_countries[:6]) if affected_countries else 'Not specified'}\n"
+        f"• Disruption types: {', '.join(disruption_types[:6]) if disruption_types else 'General logistics disruption'}\n"
+        f"• Estimated impact on shipping: {impact} (avg risk {avg_score:.2f}/5, max {max_score}/5)"
+    )
+    return msg, {
+        "affected_ports": affected_ports,
+        "affected_countries": affected_countries,
+        "disruption_types": disruption_types,
+        "estimated_impact": impact,
+        "avg_risk_score": round(avg_score, 2),
+        "max_risk_score": max_score,
+        "disruption_count": len(alerts),
+        "latest_alert": latest_alert,
+        "alerts": alerts,
+    }
+
+
+async def _build_assistant_context(query: str) -> Dict[str, Any]:
+    q = (query or "").lower()
+    context: Dict[str, Any] = {}
+
+    if any(k in q for k in ["disruption", "delay", "congestion", "strike", "blockade", "weather", "typhoon", "hurricane", "cyclone"]):
+        try:
+            disruption_alerts = _get_disruption_alerts_cached()
+            if not disruption_alerts:
+                await _refresh_disruption_cache()
+                disruption_alerts = _disruption_cache["alerts"]
+            _, disruption_data = _summarize_disruption_alerts(disruption_alerts)
+            context["disruption_summary"] = disruption_data
+        except Exception as disruption_error:
+            print(f"Assistant disruption context failed: {disruption_error}")
+
+    if any(k in q for k in ["political", "geopolit", "sanction", "tariff", "middle east", "suez", "hormuz", "red sea", "risk"]):
+        try:
+            if "middle east" in q or any(k in q for k in ["suez", "hormuz", "red sea"]):
+                countries = ["Saudi Arabia", "United Arab Emirates", "Qatar", "Kuwait", "Oman", "Iraq", "Iran", "Egypt", "Turkey", "Yemen"]
+            else:
+                countries = await scheduler_agent.extract_countries()
+            political_risks = await political_risk_agent.analyze_risks(countries[:20])
+            high_risk = [r for r in political_risks if r.likelihood_score >= 4]
+            avg_score = round(sum(r.likelihood_score for r in political_risks) / len(political_risks), 2) if political_risks else 0
+            context["political_summary"] = {
+                "countries_analyzed": len(political_risks),
+                "high_risk_count": len(high_risk),
+                "average_score": avg_score,
+                "top_countries": [r.country for r in high_risk[:5]],
+            }
+        except Exception as political_error:
+            print(f"Assistant political context failed: {political_error}")
+
+    if any(k in q for k in ["cargo delay", "delivery", "schedule", "customs", "delay", "lead time"]):
+        try:
+            schedule_risks = await scheduler_agent.analyze_schedule_risks()
+            high_delay = [r for r in schedule_risks if r.risk_level >= 4]
+            avg_delay = round(sum(r.delay_days for r in schedule_risks) / len(schedule_risks), 2) if schedule_risks else 0
+            context["schedule_summary"] = {
+                "routes_analyzed": len(schedule_risks),
+                "high_delay_routes": len(high_delay),
+                "average_delay_days": avg_delay,
+            }
+        except Exception as schedule_error:
+            print(f"Assistant schedule context failed: {schedule_error}")
+
+    return context
+
+
 @app.post("/api/query")
 async def process_query(request: QueryRequest):
     """Process natural language queries and route to appropriate agents"""
     try:
-        # Use the session_id from the request, or generate a new one if not provided
         session_id = request.session_id or str(uuid.uuid4())
         text = request.query.lower()
         intent = chatbot_manager.classify_intent(text)
-        
+
         if intent == "reject":
-            response = await assistant_agent.process_query("offtopic")
-            return {"session_id": session_id, "response": response, "type": "assistant"}
-        
-        message = ""  # Initialize message variable
-        report = None
-        
+            response = await assistant_agent.process_query("offtopic", context={"intent": "reject"})
+            message = response.get("message", "I can help with logistics and supply chain questions.")
+            return _response_payload(session_id, "assistant", message, {"intent": "reject"})
+
         if intent == "combined":
             countries = await scheduler_agent.extract_countries()
             political_risks = await political_risk_agent.analyze_risks(countries)
             schedule_risks = await scheduler_agent.analyze_schedule_risks()
             report = await reporting_agent.generate_combined_report(political_risks, schedule_risks, session_id)
-            
-            # Generate summary message
+
             high_pol_risk = sum(1 for r in political_risks if r.likelihood_score >= 3)
-            high_sch_risk = sum(1 for r in schedule_risks if r.severity == "High")
+            high_sch_risk = sum(1 for r in schedule_risks if r.risk_level >= 4)
             message = f"I've completed a comprehensive analysis covering {len(political_risks)} countries and {len(schedule_risks)} routes. "
             if high_pol_risk > 0:
                 message += f"⚠️ {high_pol_risk} countries show high political risks. "
             if high_sch_risk > 0:
                 message += f"🚨 {high_sch_risk} routes face severe delays. "
-            message += f"The full combined report includes risk assessments, mitigation strategies, and actionable recommendations."
+            message += "The full combined report includes risk assessments, mitigation strategies, and actionable recommendations."
+
+            await db_client.store_report(report)
+            return _response_payload(
+                session_id,
+                "assistant",
+                message,
+                {
+                    "intent": "combined",
+                    "report_id": report.report_id,
+                    "report_type": "combined",
+                    "political_risk_count": len(political_risks),
+                    "schedule_risk_count": len(schedule_risks),
+                },
+                report=report,
+            )
+
         elif intent == "political":
             countries = await scheduler_agent.extract_countries()
             political_risks = await political_risk_agent.analyze_risks(countries)
             report = await reporting_agent.generate_political_report(political_risks, session_id)
-            
-            # Generate detailed message with country information
+
             high_risk_countries = [r for r in political_risks if r.likelihood_score >= 3]
             medium_risk_countries = [r for r in political_risks if r.likelihood_score == 2]
             low_risk_countries = [r for r in political_risks if r.likelihood_score < 2]
-            
+
             message = f"📊 **Political Risk Analysis for {len(political_risks)} Countries**\n\n"
-            
+
             if high_risk_countries:
                 message += f"🔴 **High Risk ({len(high_risk_countries)} countries):**\n"
-                for risk in high_risk_countries[:5]:  # Show top 5
+                for risk in high_risk_countries[:5]:
                     message += f"  • {risk.country}: {risk.risk_type} (Score: {risk.likelihood_score}/5)\n"
                 if len(high_risk_countries) > 5:
                     message += f"  ... and {len(high_risk_countries) - 5} more\n"
                 message += "\n"
-            
+
             if medium_risk_countries:
                 message += f"🟡 **Medium Risk ({len(medium_risk_countries)} countries):**\n"
-                for risk in medium_risk_countries[:3]:  # Show top 3
+                for risk in medium_risk_countries[:3]:
                     message += f"  • {risk.country}: {risk.risk_type}\n"
                 if len(medium_risk_countries) > 3:
                     message += f"  ... and {len(medium_risk_countries) - 3} more\n"
                 message += "\n"
-            
+
             if low_risk_countries:
                 message += f"🟢 **Low Risk ({len(low_risk_countries)} countries)**\n\n"
-            
+
             message += f"📋 A comprehensive report with detailed analysis and mitigation strategies has been generated."
-            
+
+            await db_client.store_report(report)
+            return _response_payload(
+                session_id,
+                "political",
+                message,
+                {
+                    "intent": "political",
+                    "report_id": report.report_id,
+                    "countries_analyzed": len(political_risks),
+                    "high_risk_count": len(high_risk_countries),
+                },
+                report=report,
+            )
+
         elif intent == "schedule":
             schedule_risks = await scheduler_agent.analyze_schedule_risks()
             report = await reporting_agent.generate_schedule_report(schedule_risks, session_id)
-            
-            # Generate detailed message with route information
-            high_severity = [r for r in schedule_risks if r.severity == "High"]
-            medium_severity = [r for r in schedule_risks if r.severity == "Medium"]
-            low_severity = [r for r in schedule_risks if r.severity == "Low"]
-            
+
+            high_severity = [r for r in schedule_risks if r.risk_level >= 4]
+            medium_severity = [r for r in schedule_risks if r.risk_level == 3]
+            low_severity = [r for r in schedule_risks if r.risk_level <= 2]
+
             message = f"📊 **Schedule Risk Analysis for {len(schedule_risks)} Routes**\n\n"
-            
+
             if high_severity:
                 message += f"🔴 **High Severity Delays ({len(high_severity)} routes):**\n"
-                for risk in high_severity[:5]:  # Show top 5
+                for risk in high_severity[:5]:
+                    factors = ", ".join(risk.risk_factors) if risk.risk_factors else "No factors available"
                     message += f"  • Route {risk.equipment_id}: {risk.delay_days} days delay\n"
-                    message += f"    Reason: {risk.reason}\n"
+                    message += f"    Risk Factors: {factors}\n"
                 if len(high_severity) > 5:
                     message += f"  ... and {len(high_severity) - 5} more\n"
                 message += "\n"
-            
+
             if medium_severity:
                 message += f"🟡 **Medium Severity ({len(medium_severity)} routes):**\n"
-                for risk in medium_severity[:3]:  # Show top 3
+                for risk in medium_severity[:3]:
                     message += f"  • Route {risk.equipment_id}: {risk.delay_days} days\n"
                 if len(medium_severity) > 3:
                     message += f"  ... and {len(medium_severity) - 3} more\n"
                 message += "\n"
-            
+
             if low_severity:
                 message += f"🟢 **Low Severity ({len(low_severity)} routes)**\n\n"
-            
+
             message += f"📋 Common issues: Port congestion, weather delays, and customs processing. Full report generated."
-            
-        else:
-            # Check if it's a route query
-            if assistant_agent._is_route_query(text):
-                # Get the detailed route analysis
-                response_obj = await assistant_agent.process_query(request.query)
-                # Extract just the message string from the response object
-                message = response_obj.get("message", str(response_obj)) if isinstance(response_obj, dict) else str(response_obj)
-                
-                # Extract origin and destination for report generation
-                words = text.split()
-                origin = None
-                destination = None
-                if "from" in words and "to" in words:
-                    from_idx = words.index("from")
-                    to_idx = words.index("to")
-                    if from_idx < to_idx and to_idx < len(words):
-                        origin = " ".join(words[from_idx+1:to_idx])
-                        destination = " ".join(words[to_idx+1:])
-                
-                # Generate route report if we have origin and destination
-                if origin and destination:
-                    report = await reporting_agent.generate_route_report(origin, destination, message, session_id)
-                    await db_client.store_report(report)
-                    return {"session_id": session_id, "report": report, "type": "route", "response": {"message": message}}
-                else:
-                    # Return just the message if we can't parse route
-                    return {"session_id": session_id, "response": {"message": message}, "type": "assistant"}
-            else:
-                # For non-route queries, just return assistant response
-                response_obj = await assistant_agent.process_query(request.query)
-                # Extract just the message string from the response object
-                message = response_obj.get("message", str(response_obj)) if isinstance(response_obj, dict) else str(response_obj)
-                return {"session_id": session_id, "response": {"message": message}, "type": "assistant"}
-        
-        # Store report and return
-        if report:
+
             await db_client.store_report(report)
-            return {"session_id": session_id, "report": report, "type": "report", "response": {"message": message}}
+            return _response_payload(
+                session_id,
+                "schedule",
+                message,
+                {
+                    "intent": "schedule",
+                    "report_id": report.report_id,
+                    "route_count": len(schedule_risks),
+                    "high_risk_count": len(high_severity),
+                },
+                report=report,
+            )
+
+        elif intent == "disruption":
+            disruption_alerts = _get_disruption_alerts_cached()
+            if not disruption_alerts:
+                await _refresh_disruption_cache()
+                disruption_alerts = _disruption_cache["alerts"]
+
+            message, disruption_data = _summarize_disruption_alerts(disruption_alerts)
+            return _response_payload(session_id, "disruption", message, disruption_data)
+
         else:
-            return {"session_id": session_id, "response": {"message": "Unable to generate report"}, "type": "error"}
-            
+            if assistant_agent._is_route_query(text):
+                route_resolution = assistant_agent.resolve_ports_from_query(request.query)
+                origin = route_resolution.get("origin_input")
+                destination = route_resolution.get("destination_input")
+                origin_port = route_resolution.get("origin_port")
+                destination_port = route_resolution.get("destination_port")
+
+                if not origin or not destination:
+                    return _response_payload(
+                        session_id,
+                        "assistant",
+                        "Please specify origin and destination like: 'Route from Shanghai to Los Angeles'.",
+                        {"intent": "route"},
+                    )
+
+                if not origin_port or not destination_port:
+                    return _response_payload(
+                        session_id,
+                        "assistant",
+                        (
+                            f"I could not map '{origin}' and '{destination}' to known major ports. "
+                            "Please specify ports directly, for example: 'Route from Hamburg to Mumbai'."
+                        ),
+                        {
+                            "intent": "route",
+                            "origin_input": origin,
+                            "destination_input": destination,
+                            "origin_port": origin_port,
+                            "destination_port": destination_port,
+                        },
+                    )
+
+                optimization = _extract_route_optimization(request.query)
+                try:
+                    planner_result = await plan_multi_port_route(
+                        {
+                            "ports": [origin_port, destination_port],
+                            "optimization": optimization,
+                            "session_id": session_id,
+                        }
+                    )
+                except HTTPException as route_error:
+                    fallback_context = {
+                        "route_error": route_error.detail,
+                        "route_origin": origin,
+                        "route_destination": destination,
+                    }
+                    assistant_fallback = await assistant_agent.process_query(request.query, context=fallback_context)
+                    fallback_message = assistant_fallback.get(
+                        "message",
+                        f"Unable to plan route from {origin} to {destination}: {route_error.detail}",
+                    )
+                    return _response_payload(
+                        session_id,
+                        "assistant",
+                        fallback_message,
+                        {
+                            "intent": "route",
+                            "route_error": route_error.detail,
+                            "origin_input": origin,
+                            "destination_input": destination,
+                            "origin_port": origin_port,
+                            "destination_port": destination_port,
+                        },
+                    )
+
+                route_analysis = planner_result.get("route_analysis", {})
+                route_data = _build_route_response(route_analysis)
+                message = _summarize_route_from_planner(route_data)
+
+                if route_resolution.get("origin_resolved_from_country") or route_resolution.get("destination_resolved_from_country"):
+                    origin_country = route_resolution.get("origin_country") or origin
+                    destination_country = route_resolution.get("destination_country") or destination
+                    optimization_prefix = {
+                        "fastest": "fastest",
+                        "cheapest": "most cost-efficient",
+                        "safest": "safest",
+                        "balanced": "balanced",
+                    }.get(optimization, "balanced")
+                    canals = route_data.get("canals_crossed", []) or []
+                    via_segment = f" via {canals[0]}" if canals else ""
+                    country_message = (
+                        f"The {optimization_prefix} maritime route from {origin_country} to {destination_country} "
+                        f"typically runs from {origin_port} to {destination_port}{via_segment}."
+                    )
+                    message = f"{country_message} {message}"
+
+                return _response_payload(
+                    session_id,
+                    "route",
+                    message,
+                    {
+                        "intent": "route",
+                        "origin_input": origin,
+                        "destination_input": destination,
+                        "origin_port": origin_port,
+                        "destination_port": destination_port,
+                        "resolved_from_country": bool(
+                            route_resolution.get("origin_resolved_from_country")
+                            or route_resolution.get("destination_resolved_from_country")
+                        ),
+                        "route_data": route_data,
+                        "route_analysis": route_analysis,
+                        "report_id": planner_result.get("report_id"),
+                    },
+                    report_id=planner_result.get("report_id"),
+                    route_analysis=route_analysis,
+                    route_data=route_data,
+                )
+
+            assistant_context = await _build_assistant_context(request.query)
+            response_obj = await assistant_agent.process_query(request.query, context=assistant_context)
+            message = response_obj.get("message", str(response_obj)) if isinstance(response_obj, dict) else str(response_obj)
+            return _response_payload(
+                session_id,
+                "assistant",
+                message,
+                {"intent": "assistant", "context_keys": list(assistant_context.keys())},
+            )
+
     except Exception as e:
-        print(f"❌ Error in process_query: {str(e)}")  # Debug log
+        print(f"❌ Error in process_query: {str(e)}")
         import traceback
-        traceback.print_exc()  # Print full traceback
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        return _response_payload(
+            request.session_id or str(uuid.uuid4()),
+            "assistant",
+            "I encountered an internal processing issue but I can still help with routes, shipping risks, or logistics questions.",
+            {"error": str(e)},
+        )
 
 @app.get("/api/reports")
 async def get_reports():
@@ -670,6 +930,246 @@ async def get_session_reports(session_id: str):
 # MULTI-PORT ROUTE PLANNING ENDPOINTS
 # ============================================================
 
+def _score_to_risk_label(score: float) -> str:
+    if score >= 4:
+        return "critical"
+    if score >= 3:
+        return "high"
+    if score >= 2:
+        return "medium"
+    return "low"
+
+
+def _level_to_score(level: Any) -> float:
+    if isinstance(level, (int, float)):
+        return float(level)
+    return 1.0
+
+
+def _extract_route_origin_destination(query: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract origin/destination from free text: 'from X to Y'."""
+    q = (query or "").strip()
+    patterns = [
+        r"\bfrom\s+(.+?)\s+to\s+(.+?)(?:\s+with\b|\s+priority\b|\s*\(|$)",
+        r"\broute\s+(.+?)\s+to\s+(.+?)(?:\s+with\b|\s+priority\b|\s*\(|$)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, q, flags=re.I)
+        if m:
+            origin = (m.group(1) or "").strip(" ,.;:!?")
+            destination = (m.group(2) or "").strip(" ,.;:!?")
+            if origin and destination:
+                return origin, destination
+    return None, None
+
+
+def _extract_route_optimization(query: str) -> str:
+    """Infer optimization profile from user query text."""
+    q = (query or "").lower()
+    if "priority: speed" in q or "fastest" in q or "speed priority" in q:
+        return "fastest"
+    if "priority: cost" in q or "cheapest" in q or "cost optimization" in q:
+        return "cheapest"
+    if "priority: safety" in q or "safest" in q or "safety first" in q:
+        return "safest"
+    return "balanced"
+
+
+def _build_route_response(route_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Return normalized route payload for frontend/chat consumers."""
+    summary = route_analysis.get("summary", {}) if isinstance(route_analysis, dict) else {}
+    final_risk_score = float(route_analysis.get("final_risk_score", 1) or 1)
+    return {
+        "route": route_analysis.get("route", "Unknown"),
+        "total_distance": route_analysis.get("total_distance", summary.get("total_distance_nm", 0)),
+        "estimated_time": route_analysis.get("estimated_time", summary.get("total_time_days", 0)),
+        "legs": route_analysis.get("legs", []),
+        "canals_crossed": summary.get("canals_used", []),
+        "risk_level": _score_to_risk_label(final_risk_score),
+        "final_risk_score": final_risk_score,
+        "overall_risk_score": float(route_analysis.get("overall_risk_score", final_risk_score) or final_risk_score),
+        "operational_risk_score": float(route_analysis.get("operational_risk_score", 1) or 1),
+        "chokepoints": route_analysis.get("chokepoints", []),
+        "disruption_alerts": route_analysis.get("disruption_alerts", []),
+        "political_risks": route_analysis.get("political_risks", []),
+        "cost_estimation": route_analysis.get("cost_estimation", {
+            "currency": "USD",
+            "total_cost_usd": summary.get("total_cost_usd", 0),
+            "breakdown_usd": summary.get("cost_breakdown_usd", {}),
+        }),
+        "emissions_estimation": route_analysis.get("emissions_estimation", {
+            "estimated_co2_tons": summary.get("estimated_co2_tons", 0),
+        }),
+        "weather_conditions": route_analysis.get("weather_conditions", summary.get("weather_overview", {})),
+        "congestion_risk": route_analysis.get("congestion_risk", summary.get("congestion_risk", {})),
+        "timeline_summary": route_analysis.get("timeline_summary", summary.get("timeline_summary", [])),
+    }
+
+
+def _summarize_route_from_planner(route_data: Dict[str, Any]) -> str:
+    """Deterministic summary from planner output only (no fabricated values)."""
+    route = route_data.get("route", "Unknown route")
+    distance = route_data.get("total_distance", 0)
+    eta = route_data.get("estimated_time", 0)
+    final_score = route_data.get("final_risk_score", 1)
+    risk_level = route_data.get("risk_level", "low")
+    canals = route_data.get("canals_crossed", []) or []
+    chokepoints = route_data.get("chokepoints", []) or []
+    disruptions = route_data.get("disruption_alerts", []) or []
+    pol_count = len(route_data.get("political_risks", []) or [])
+    total_cost = (
+        (route_data.get("cost_estimation") or {}).get("total_cost_usd")
+        if isinstance(route_data.get("cost_estimation"), dict)
+        else None
+    )
+    co2_tons = (
+        (route_data.get("emissions_estimation") or {}).get("estimated_co2_tons")
+        if isinstance(route_data.get("emissions_estimation"), dict)
+        else None
+    )
+    canal_text = ", ".join(canals) if canals else "None"
+    chokepoint_text = ", ".join(chokepoints) if chokepoints else "None"
+    cost_text = f"${float(total_cost):,.0f}" if isinstance(total_cost, (int, float)) else "N/A"
+    co2_text = f"{float(co2_tons):,.1f} tCO2" if isinstance(co2_tons, (int, float)) else "N/A"
+    return (
+        f"Route analysis complete for {route}. Distance: {distance} nm; estimated time: {eta} days; "
+        f"final risk: {risk_level} ({final_score}/5). Estimated cost: {cost_text}; emissions: {co2_text}. "
+        f"Canals crossed: {canal_text}. "
+        f"Chokepoints: {chokepoint_text}. Related disruption alerts: {len(disruptions)}. "
+        f"Related political risks: {pol_count}."
+    )
+
+
+def _enrich_route_with_risks(
+    route_analysis: Dict[str, Any],
+    disruption_alerts: List[Dict[str, Any]],
+    political_risks: List[Dict[str, Any]],
+    world_risk_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Overlay political/disruption risk signals onto each route leg."""
+    legs = route_analysis.get("legs", [])
+    if not isinstance(legs, list):
+        legs = []
+
+    political_score_by_country: Dict[str, float] = {}
+    for p in political_risks or []:
+        country = get_canonical_country((p.get("country") or "").strip())
+        score = p.get("likelihood_score")
+        if not country or not isinstance(score, (int, float)):
+            continue
+        political_score_by_country[country] = max(float(score), political_score_by_country.get(country, 1.0))
+
+    disruption_score_by_country: Dict[str, float] = {}
+    alerts_by_country: Dict[str, List[Dict[str, Any]]] = {}
+    for a in disruption_alerts or []:
+        country = get_canonical_country((a.get("country") or "").strip())
+        score = a.get("risk_score")
+        if not country:
+            continue
+        if isinstance(score, (int, float)):
+            disruption_score_by_country[country] = max(float(score), disruption_score_by_country.get(country, 1.0))
+        alerts_by_country.setdefault(country, []).append(a)
+
+    existing_chokepoints = route_analysis.get("chokepoints", [])
+    chokepoints = list(dict.fromkeys(existing_chokepoints if isinstance(existing_chokepoints, list) else []))
+    chokepoint_country_map = {
+        "Suez Canal": ["Egypt"],
+        "Panama Canal": ["Panama"],
+        "Strait of Hormuz": ["Iran", "United Arab Emirates"],
+        "Strait of Malacca": ["Singapore", "Malaysia"],
+        "Bab el-Mandeb": ["Yemen", "Djibouti"],
+    }
+    route_countries = set()
+    final_risk_score = 1.0
+    route_operational_risk = 1.0
+
+    for leg in legs:
+        from_country = get_canonical_country((leg.get("from_country") or "").strip())
+        to_country = get_canonical_country((leg.get("to_country") or "").strip())
+        leg["from_country"] = from_country
+        leg["to_country"] = to_country
+
+        countries_crossed = [c for c in [from_country, to_country] if c]
+        canal_name = leg.get("canal_name")
+        if canal_name == "Suez Canal":
+            countries_crossed.append("Egypt")
+            if "Suez Canal" not in chokepoints:
+                chokepoints.append("Suez Canal")
+        elif canal_name == "Panama Canal":
+            countries_crossed.append("Panama")
+            if "Panama Canal" not in chokepoints:
+                chokepoints.append("Panama Canal")
+
+        for cp in leg.get("chokepoints_nearby", []) or []:
+            cp_name = cp.get("name")
+            if not cp_name:
+                continue
+            if cp_name not in chokepoints:
+                chokepoints.append(cp_name)
+            for cp_country in chokepoint_country_map.get(cp_name, []):
+                countries_crossed.append(cp_country)
+
+        # Preserve order while deduping.
+        countries_crossed = list(dict.fromkeys(countries_crossed))
+        leg["countries_crossed"] = countries_crossed
+        for c in countries_crossed:
+            route_countries.add(c)
+
+        political_scores = []
+        disruption_scores = []
+        for c in countries_crossed:
+            world_level = _level_to_score((world_risk_data.get(c) or {}).get("risk_level", 1))
+            political_scores.append(political_score_by_country.get(c, world_level))
+            disruption_scores.append(disruption_score_by_country.get(c, 1.0))
+
+        political_risk = max(political_scores) if political_scores else 1.0
+        disruption_risk = max(disruption_scores) if disruption_scores else 1.0
+        operational_risk = float(leg.get("operational_risk_score", 1.0) or 1.0)
+        leg_risk = max(political_risk, disruption_risk, operational_risk)
+        final_risk_score = max(final_risk_score, leg_risk)
+        route_operational_risk = max(route_operational_risk, operational_risk)
+
+        leg["political_risk_score"] = round(political_risk, 2)
+        leg["disruption_risk_score"] = round(disruption_risk, 2)
+        leg["operational_risk_score"] = round(operational_risk, 2)
+        leg["leg_risk_score"] = round(leg_risk, 2)
+        leg["risk_level"] = _score_to_risk_label(leg_risk)
+
+        related_alerts = []
+        for c in countries_crossed:
+            for a in alerts_by_country.get(c, []):
+                related_alerts.append({
+                    "country": c,
+                    "title": a.get("title"),
+                    "summary": a.get("summary"),
+                    "risk_score": a.get("risk_score"),
+                    "published_at": a.get("published_at"),
+                })
+        leg["relevant_disruption_alerts"] = related_alerts[:3]
+
+    relevant_disruption_alerts = []
+    for c in route_countries:
+        for a in alerts_by_country.get(c, []):
+            relevant_disruption_alerts.append(a)
+
+    relevant_political_risks = [
+        p for p in (political_risks or [])
+        if get_canonical_country((p.get("country") or "").strip()) in route_countries
+    ]
+
+    route_analysis["route"] = " → ".join(route_analysis.get("ports", []))
+    route_analysis["total_distance"] = route_analysis.get("summary", {}).get("total_distance_nm", 0)
+    route_analysis["estimated_time"] = route_analysis.get("summary", {}).get("total_time_days", 0)
+    route_analysis["chokepoints"] = chokepoints
+    route_analysis["disruption_alerts"] = relevant_disruption_alerts
+    route_analysis["political_risks"] = relevant_political_risks
+    route_analysis["final_risk_score"] = round(final_risk_score, 2)
+    route_analysis["operational_risk_score"] = round(route_operational_risk, 2)
+    route_analysis["overall_risk_score"] = round(final_risk_score, 2)
+
+    return route_analysis
+
+
 @app.post("/api/route/plan-multi-port")
 async def plan_multi_port_route(request: Dict[str, Any]):
     """
@@ -695,12 +1195,38 @@ async def plan_multi_port_route(request: Dict[str, Any]):
         
         if "error" in route_analysis:
             raise HTTPException(status_code=400, detail=route_analysis["error"])
+
+        # Pull current disruption + political context and fuse into route legs.
+        disruption_alerts = _get_disruption_alerts_cached()
+        if not disruption_alerts:
+            await _refresh_disruption_cache()
+            disruption_alerts = _disruption_cache["alerts"]
+
+        route_countries = set()
+        for leg in route_analysis.get("legs", []):
+            from_c = get_canonical_country((leg.get("from_country") or "").strip())
+            to_c = get_canonical_country((leg.get("to_country") or "").strip())
+            if from_c:
+                route_countries.add(from_c)
+            if to_c:
+                route_countries.add(to_c)
+        selected_countries = list(route_countries) or DEFAULT_DASHBOARD_POLITICAL_COUNTRIES
+        political_risks = await _get_dashboard_political_risks(selected_countries)
+        world_risk_data = build_world_risk_from_alerts(disruption_alerts or [], political_risks or [])
+        route_analysis = _enrich_route_with_risks(
+            route_analysis,
+            disruption_alerts or [],
+            political_risks or [],
+            world_risk_data or {},
+        )
         
         # Generate a report for this route
         report_id = str(uuid.uuid4())
+        print("Saving route report:", report_id)
+        print("Session:", session_id)
         route_report = RiskReport(
             report_id=report_id,
-            session_id=session_id or "default",
+            session_id=session_id if session_id else "default",
             report_type="multi_port_route",
             created_at=datetime.now(),
             title=f"Multi-Port Route: {' → '.join(ports)}",

@@ -41,6 +41,7 @@ const ChatPanel = () => {
   });
   const [showRouteForm, setShowRouteForm] = useState(false);
   const [routeAnalysis, setRouteAnalysis] = useState(null);
+  const [routeError, setRouteError] = useState(null);
   const [showRoutePlanner, setShowRoutePlanner] = useState(false);
   const messagesEndRef = useRef(null);
 
@@ -120,29 +121,30 @@ const ChatPanel = () => {
     e.preventDefault();
     if (!inputMessage.trim() || isLoading) return;
 
-    const message = inputMessage.toLowerCase();
-
-    // Check if user wants route analysis
-    if (
-      message.includes("route") ||
-      message.includes("shipping") ||
-      message.includes("from") ||
-      message.includes("to")
-    ) {
-      setShowRouteForm(true);
-      setInputMessage("");
-      return;
-    }
-
     setIsLoading(true);
     setIsTyping(true);
+    setRouteError(null);
 
     // Simulate typing delay
     setTimeout(async () => {
-      await sendChatMessage(inputMessage);
-      setInputMessage("");
-      setIsLoading(false);
-      setIsTyping(false);
+      try {
+        const result = await sendChatMessage(inputMessage);
+        const analysis =
+          result?.route_analysis ||
+          result?.route_data ||
+          result?.response?.route_data ||
+          result?.response?.data?.route_data ||
+          result?.response?.data?.route_analysis;
+        if (analysis) {
+          setRouteAnalysis(analysis);
+        }
+      } catch (err) {
+        setRouteError(err?.message || "Failed to process message");
+      } finally {
+        setInputMessage("");
+        setIsLoading(false);
+        setIsTyping(false);
+      }
     }, 1000);
   };
 
@@ -152,23 +154,39 @@ const ChatPanel = () => {
 
     setIsLoading(true);
     setIsTyping(true);
+    setRouteError(null);
 
     const routeQuery = `Route from ${routeForm.from} to ${routeForm.to} with ${
       routeForm.cargo || "general cargo"
     } (priority: ${routeForm.priority})`;
 
-    setTimeout(async () => {
-      await sendChatMessage(routeQuery);
-
-      // Generate comprehensive route analysis
-      const analysis = generateRouteAnalysis(routeForm);
+    try {
+      const result = await sendChatMessage(routeQuery);
+      const analysis =
+        result?.route_analysis ||
+        result?.route_data ||
+        result?.response?.route_data ||
+        result?.response?.data?.route_data ||
+        result?.response?.data?.route_analysis;
+      if (!analysis) {
+        const backendMessage =
+          result?.response?.message ||
+          "Failed to analyze route";
+        setRouteError(backendMessage);
+        setIsLoading(false);
+        setIsTyping(false);
+        return;
+      }
       setRouteAnalysis(analysis);
-
       setIsLoading(false);
       setIsTyping(false);
       setShowRouteForm(false);
       setRouteForm({ from: "", to: "", cargo: "", priority: "cost" });
-    }, 2000);
+    } catch (err) {
+      setIsLoading(false);
+      setIsTyping(false);
+      setRouteError(err?.message || "Failed to analyze route");
+    }
   };
 
   const handleFileUpload = async (e) => {
@@ -229,54 +247,25 @@ const ChatPanel = () => {
     setTimeout(() => setCopiedMessageId(null), 2000);
   };
 
-  const generateRouteAnalysis = (form) => {
-    const { from, to, cargo, priority } = form;
-
-    // Mock comprehensive route analysis
-    const analysis = {
-      route: `${from} → ${to}`,
-      cargo: cargo || "General Cargo",
-      priority: priority,
-      distance: Math.floor(Math.random() * 5000) + 3000, // nautical miles
-      transitTime: Math.floor(Math.random() * 20) + 10, // days
-      politicalRisk: Math.floor(Math.random() * 3) + 1, // 1-4
-      weatherRisk: Math.floor(Math.random() * 3) + 2, // 2-5
-      piracyRisk: Math.floor(Math.random() * 2) + 1, // 1-3
-      portCongestion: Math.floor(Math.random() * 3) + 2, // 2-5
-      visibility: Math.floor(Math.random() * 5) + 5, // 5-10 km
-      windSpeed: Math.floor(Math.random() * 20) + 10, // knots
-      seaTemperature: Math.floor(Math.random() * 15) + 10, // celsius
-      waveHeight: (Math.random() * 3 + 1).toFixed(1), // meters
-      fuelCost: Math.floor(Math.random() * 500000) + 200000, // USD
-      totalCost: Math.floor(Math.random() * 800000) + 400000, // USD
-      alternativeRoutes: [
-        { name: "Direct Route", time: "12 days", cost: "High", risk: "Medium" },
-        {
-          name: "Via Panama Canal",
-          time: "18 days",
-          cost: "Medium",
-          risk: "Low",
-        },
-        { name: "Via Suez Canal", time: "22 days", cost: "Low", risk: "High" },
-      ],
-      weatherForecast: [
-        { day: 1, condition: "Clear", wind: "15 kts", waves: "1.2m" },
-        { day: 2, condition: "Partly Cloudy", wind: "18 kts", waves: "1.5m" },
-        { day: 3, condition: "Storm", wind: "25 kts", waves: "2.8m" },
-        { day: 4, condition: "Clear", wind: "12 kts", waves: "1.0m" },
-      ],
-      safetyPrecautions: [
-        "Monitor weather forecasts continuously",
-        "Maintain communication with coast guard",
-        "Follow ISPS security protocols",
-        "Ensure cargo is properly secured",
-        "Have emergency response plans ready",
-        "Regular equipment maintenance checks",
-      ],
-    };
-
-    return analysis;
+  const formatCurrency = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "N/A";
+    return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
   };
+
+  const formatFixed = (value, digits = 1) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "N/A";
+    return n.toFixed(digits);
+  };
+
+  const routeCost = routeAnalysis?.cost_estimation || {};
+  const routeEmissions = routeAnalysis?.emissions_estimation || {};
+  const routeWeather = routeAnalysis?.weather_conditions || {};
+  const routeCongestion = routeAnalysis?.congestion_risk || {};
+  const routeTimeline = Array.isArray(routeAnalysis?.timeline_summary)
+    ? routeAnalysis.timeline_summary
+    : [];
 
   // If showing route planner, render it instead of chat
   if (showRoutePlanner) {
@@ -571,90 +560,149 @@ const ChatPanel = () => {
           ))
         )}
 
-        {/* Route Analysis Display */}
-        {routeAnalysis && (
-          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
-            <h4 className="font-semibold text-blue-900 mb-3">
-              🚢 Route Analysis: {routeAnalysis.route}
-            </h4>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Distance:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.distance} nm
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Transit Time:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.transitTime} days
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Political Risk:</span>
-                  <span
-                    className={`font-medium ${
-                      routeAnalysis.politicalRisk <= 2
-                        ? "text-green-600"
-                        : routeAnalysis.politicalRisk <= 3
-                        ? "text-yellow-600"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {routeAnalysis.politicalRisk}/5
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Weather Risk:</span>
-                  <span
-                    className={`font-medium ${
-                      routeAnalysis.weatherRisk <= 2
-                        ? "text-green-600"
-                        : routeAnalysis.weatherRisk <= 3
-                        ? "text-yellow-600"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {routeAnalysis.weatherRisk}/5
-                  </span>
-                </div>
+      {/* Route Analysis Display */}
+      {routeError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+          {routeError}
+        </div>
+      )}
+      {routeAnalysis && (
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+          <h4 className="font-semibold text-blue-900 mb-3">
+            🚢 Route Analysis: {routeAnalysis.route || (routeAnalysis.ports || []).join(" → ")}
+          </h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="space-y-2">
+              <div className="flex justify-between">
+                <span className="text-gray-600">Distance:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.total_distance ?? routeAnalysis.summary?.total_distance_nm ?? 0).toLocaleString()} nm
+                </span>
               </div>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Visibility:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.visibility} km
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Wind Speed:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.windSpeed} kts
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Wave Height:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.waveHeight}m
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Sea Temp:</span>
-                  <span className="font-medium">
-                    {routeAnalysis.seaTemperature}°C
-                  </span>
-                </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Estimated Time:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.estimated_time ?? routeAnalysis.summary?.total_time_days ?? 0).toFixed?.(1) ?? (routeAnalysis.estimated_time ?? routeAnalysis.summary?.total_time_days ?? 0)} days
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Final Risk:</span>
+                <span className="font-medium text-red-700">
+                  {(routeAnalysis.final_risk_score ?? 1)}/5
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Operational Risk:</span>
+                <span className="font-medium text-amber-700">
+                  {routeAnalysis.operational_risk_score ?? "N/A"}/5
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Chokepoints:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.chokepoints || []).length}
+                </span>
               </div>
             </div>
-            <div className="mt-4 pt-3 border-t border-blue-200">
-              <p className="text-sm text-blue-800">
-                💰 Total Cost: ${routeAnalysis.totalCost.toLocaleString()} | 🛡️
-                Safety Score: {Math.floor(Math.random() * 2) + 8}/10
-              </p>
+            <div className="space-y-2">
+              <div className="flex justify-between">
+                <span className="text-gray-600">Route Legs:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.legs || []).length}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Political Risks:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.political_risks || []).length}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Disruption Alerts:</span>
+                <span className="font-medium">
+                  {(routeAnalysis.disruption_alerts || []).length}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Optimization:</span>
+                <span className="font-medium">
+                  {routeAnalysis.optimization || "balanced"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Estimated Cost:</span>
+                <span className="font-medium">
+                  {formatCurrency(routeCost.total_cost_usd ?? routeAnalysis.summary?.total_cost_usd)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">CO2 Emissions:</span>
+                <span className="font-medium">
+                  {formatFixed(routeEmissions.estimated_co2_tons ?? routeAnalysis.summary?.estimated_co2_tons, 1)} t
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Weather Risk:</span>
+                <span className="font-medium">
+                  {routeWeather.weather_risk_level || routeWeather.risk_level || "N/A"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Congestion Risk:</span>
+                <span className="font-medium">
+                  {routeCongestion.overall_risk_level || "N/A"}
+                </span>
+              </div>
             </div>
           </div>
-        )}
+          {(routeWeather.condition || routeCongestion.origin || routeCongestion.destination) && (
+            <div className="mt-3 pt-3 border-t border-blue-200 text-xs text-gray-700 space-y-1">
+              {routeWeather.condition && (
+                <div>
+                  <span className="font-medium text-gray-800">Weather:</span>{" "}
+                  {routeWeather.condition} (risk {(routeWeather.weather_risk_score ?? routeWeather.risk_score ?? "N/A")})
+                </div>
+              )}
+              {(routeCongestion.origin || routeCongestion.destination) && (
+                <div>
+                  <span className="font-medium text-gray-800">Congestion:</span>{" "}
+                  origin {routeCongestion.origin?.risk_level || "N/A"} ({routeCongestion.origin?.estimated_wait_days ?? "N/A"}d), destination {routeCongestion.destination?.risk_level || "N/A"} ({routeCongestion.destination?.estimated_wait_days ?? "N/A"}d)
+                </div>
+              )}
+            </div>
+          )}
+          {!!(routeAnalysis.chokepoints || []).length && (
+            <div className="mt-3 pt-3 border-t border-blue-200 text-xs text-blue-800">
+              Chokepoints: {(routeAnalysis.chokepoints || []).join(", ")}
+            </div>
+          )}
+          {!!routeTimeline.length && (
+            <div className="mt-3 pt-3 border-t border-blue-200 text-xs text-gray-700 space-y-1">
+              <div className="font-medium text-gray-800">Voyage Timeline (sample)</div>
+              {routeTimeline.slice(0, 5).map((phase, idx) => (
+                <div key={idx} className="flex justify-between gap-4">
+                  <span>{String(phase.phase || "").replace(/_/g, " ")}</span>
+                  <span>
+                    day {phase.start_day_offset ?? "-"} → {phase.end_day_offset ?? "-"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!!(routeAnalysis.legs || []).length && (
+            <div className="mt-3 pt-3 border-t border-blue-200 space-y-1 text-xs text-gray-700">
+              {(routeAnalysis.legs || []).slice(0, 3).map((leg, idx) => (
+                <div key={idx} className="flex justify-between">
+                  <span>{leg.from} → {leg.to}</span>
+                  <span>
+                    political {leg.political_risk_score ?? "-"} / disruption {leg.disruption_risk_score ?? "-"} / final {leg.leg_risk_score ?? "-"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
         {isLoading && (
           <div className="flex justify-start">

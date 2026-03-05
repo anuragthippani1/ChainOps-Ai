@@ -226,6 +226,12 @@ MAJOR_PORTS = {
         "capacity": "High",
         "avg_wait_time": 0.8
     },
+    "Visakhapatnam": {
+        "country": "India",
+        "coordinates": {"lat": 17.6868, "lon": 83.2185},
+        "capacity": "Medium",
+        "avg_wait_time": 0.8
+    },
     "Colombo": {
         "country": "Sri Lanka",
         "coordinates": {"lat": 6.9271, "lon": 79.8612},
@@ -253,11 +259,51 @@ CANALS = {
     }
 }
 
+# Common user-entered aliases mapped to canonical port names.
+PORT_ALIASES = {
+    "vizag": "Visakhapatnam",
+    "vishakhapatnam": "Visakhapatnam",
+    "bombay": "Mumbai",
+    "yokohama": "Tokyo",
+    "nyc": "New York",
+    "la": "Los Angeles",
+    "jebel ali": "Dubai",
+    "uae": "Dubai",
+}
+
+
+def _resolve_port_name(port_name: str):
+    """Resolve user-entered port text to a canonical MAJOR_PORTS key."""
+    if not port_name:
+        return None
+
+    q = port_name.strip().lower()
+    if not q:
+        return None
+
+    if q in PORT_ALIASES:
+        return PORT_ALIASES[q]
+
+    for name in MAJOR_PORTS.keys():
+        if name.lower() == q:
+            return name
+
+    # Fallback: tolerate partial matches only when unique.
+    partial_matches = [
+        name for name in MAJOR_PORTS.keys()
+        if q in name.lower() or name.lower() in q
+    ]
+    if len(partial_matches) == 1:
+        return partial_matches[0]
+
+    return None
+
 def get_port_by_name(port_name: str):
-    """Get port information by name (case-insensitive)"""
-    for name, info in MAJOR_PORTS.items():
-        if name.lower() == port_name.lower():
-            return {**info, "name": name}
+    """Get port information by name, alias, or unique partial match."""
+    resolved_name = _resolve_port_name(port_name)
+    if resolved_name and resolved_name in MAJOR_PORTS:
+        info = MAJOR_PORTS[resolved_name]
+        return {**info, "name": resolved_name}
     return None
 
 def get_all_port_names():
@@ -272,6 +318,15 @@ def search_ports(query: str):
         if query in name.lower() or query in info["country"].lower():
             results.append({
                 "name": name,
+                "country": info["country"],
+                "coordinates": info["coordinates"]
+            })
+    if query in PORT_ALIASES:
+        mapped = PORT_ALIASES[query]
+        if mapped in MAJOR_PORTS and not any(r["name"] == mapped for r in results):
+            info = MAJOR_PORTS[mapped]
+            results.append({
+                "name": mapped,
                 "country": info["country"],
                 "coordinates": info["coordinates"]
             })

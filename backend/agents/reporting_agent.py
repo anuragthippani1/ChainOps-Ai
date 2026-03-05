@@ -288,236 +288,577 @@ class ReportingAgent:
         return world_data
     
     async def _generate_route_pdf(self, report: RiskReport, filepath: str) -> str:
-        """Generate PDF for route analysis reports"""
+        """Generate a detailed logistics intelligence PDF from route_analysis JSON."""
         doc = SimpleDocTemplate(
-            filepath, 
+            filepath,
             pagesize=letter,
-            rightMargin=0.75*inch,
-            leftMargin=0.75*inch,
-            topMargin=0.75*inch,
-            bottomMargin=0.75*inch
+            rightMargin=0.75 * inch,
+            leftMargin=0.75 * inch,
+            topMargin=0.75 * inch,
+            bottomMargin=0.75 * inch,
         )
-        
+
         styles = getSampleStyleSheet()
         story = []
-        
-        # Define custom colors
-        primary_color = colors.HexColor('#2563eb')  # Blue
-        secondary_color = colors.HexColor('#64748b')  # Slate
-        accent_color = colors.HexColor('#0ea5e9')  # Sky blue
-        success_color = colors.HexColor('#10b981')  # Green
-        
-        # Custom styles
+
+        primary_color = colors.HexColor("#2563eb")
+        secondary_color = colors.HexColor("#64748b")
+        accent_color = colors.HexColor("#0ea5e9")
+        success_color = colors.HexColor("#10b981")
+        warning_color = colors.HexColor("#f59e0b")
+        danger_color = colors.HexColor("#ef4444")
+
         title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=28,
+            "RouteTitle",
+            parent=styles["Heading1"],
+            fontSize=24,
             textColor=primary_color,
+            alignment=TA_CENTER,
+            fontName="Helvetica-Bold",
+            leading=30,
             spaceAfter=10,
-            alignment=TA_CENTER,
-            fontName='Helvetica-Bold',
-            leading=34
         )
-        
         subtitle_style = ParagraphStyle(
-            'SubTitle',
-            parent=styles['Normal'],
-            fontSize=12,
+            "RouteSubTitle",
+            parent=styles["Normal"],
+            fontSize=11,
             textColor=secondary_color,
-            spaceAfter=30,
             alignment=TA_CENTER,
-            fontName='Helvetica'
+            fontName="Helvetica",
+            spaceAfter=20,
         )
-        
-        heading2_style = ParagraphStyle(
-            'CustomHeading2',
-            parent=styles['Heading2'],
+        section_style = ParagraphStyle(
+            "RouteSection",
+            parent=styles["Heading2"],
             fontSize=14,
             textColor=primary_color,
-            spaceAfter=10,
-            spaceBefore=15,
-            fontName='Helvetica-Bold'
-        )
-        
-        body_style = ParagraphStyle(
-            'CustomBody',
-            parent=styles['Normal'],
-            fontSize=10,
-            textColor=colors.HexColor('#1f2937'),
-            alignment=TA_JUSTIFY,
+            fontName="Helvetica-Bold",
+            spaceBefore=14,
             spaceAfter=8,
-            leading=14
         )
-        
-        # Cover Page with Logo
-        story.append(Spacer(1, 0.5*inch))
-        
-        # Add ChainOps AI Logo
+        body_style = ParagraphStyle(
+            "RouteBody",
+            parent=styles["Normal"],
+            fontSize=10,
+            textColor=colors.HexColor("#1f2937"),
+            leading=14,
+            spaceAfter=6,
+        )
+        small_style = ParagraphStyle(
+            "RouteSmall",
+            parent=styles["Normal"],
+            fontSize=8.5,
+            textColor=colors.HexColor("#334155"),
+            leading=11,
+        )
+        bullet_style = ParagraphStyle(
+            "RouteBullet",
+            parent=styles["Normal"],
+            fontSize=10,
+            textColor=colors.HexColor("#1f2937"),
+            leftIndent=16,
+            bulletIndent=6,
+            leading=14,
+            spaceAfter=6,
+        )
+
+        def _safe_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_list(value: Any) -> List[Any]:
+            return value if isinstance(value, list) else []
+
+        def _coord_text(coord: Dict[str, Any]) -> str:
+            lat = _safe_float((coord or {}).get("lat"), None)
+            lon = _safe_float((coord or {}).get("lon"), None)
+            if lat is None or lon is None:
+                return "N/A"
+            return f"{lat:.2f}, {lon:.2f}"
+
+        def _fmt_currency(value: float) -> str:
+            return f"${_safe_float(value):,.2f}"
+
+        def _risk_label(score: float) -> str:
+            if score >= 4:
+                return "Critical"
+            if score >= 3:
+                return "High"
+            if score >= 2:
+                return "Medium"
+            return "Low"
+
+        def _storm_probability(score: float) -> str:
+            if score >= 4:
+                return "70-85%"
+            if score >= 3:
+                return "45-60%"
+            if score >= 2:
+                return "20-35%"
+            return "5-15%"
+
+        def _sea_state(avg_wave_m: float) -> str:
+            if avg_wave_m >= 4.0:
+                return "Very rough"
+            if avg_wave_m >= 2.5:
+                return "Rough"
+            if avg_wave_m >= 1.5:
+                return "Moderate"
+            return "Slight"
+
+        def _table_style(header_bg=primary_color):
+            return TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), header_bg),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 9),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                    ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+
+        # Parse stored route JSON payload.
+        route_data: Dict[str, Any] = {}
+        parse_error = None
+        if report.route_analysis:
+            try:
+                route_data = json.loads(report.route_analysis) if isinstance(report.route_analysis, str) else dict(report.route_analysis)
+            except Exception as e:
+                parse_error = str(e)
+                route_data = {}
+
+        summary = route_data.get("summary", {}) if isinstance(route_data, dict) else {}
+        legs = _safe_list(route_data.get("legs"))
+        ports = _safe_list(route_data.get("ports"))
+
+        origin = ports[0] if ports else (legs[0].get("from") if legs else "Unknown")
+        destination = ports[-1] if ports else (legs[-1].get("to") if legs else "Unknown")
+        distance_nm = _safe_float(route_data.get("total_distance", summary.get("total_distance_nm", 0)))
+        eta_days = _safe_float(route_data.get("estimated_time", summary.get("total_time_days", 0)))
+        route_type = route_data.get("route_type", report.report_type)
+        avg_speed = _safe_float(summary.get("avg_speed_knots", (legs[0].get("ship_speed_knots") if legs else 0)))
+
+        # Cover + metadata.
+        story.append(Spacer(1, 0.4 * inch))
         logo_path = os.path.join(os.path.dirname(__file__), "..", "logo.png")
         if os.path.exists(logo_path):
-            logo = Image(logo_path, width=2*inch, height=2*inch)
-            logo.hAlign = 'CENTER'
+            logo = Image(logo_path, width=1.8 * inch, height=1.8 * inch)
+            logo.hAlign = "CENTER"
             story.append(logo)
-            story.append(Spacer(1, 0.3*inch))
-        else:
-            # Fallback to emoji if logo not found
-            story.append(Spacer(1, 1*inch))
-            story.append(Paragraph("🚢", title_style))
-        
-        story.append(Paragraph("ChainOps AI Intelligence Platform", title_style))
-        story.append(Spacer(1, 0.2*inch))
+            story.append(Spacer(1, 0.25 * inch))
+
+        story.append(Paragraph("ChainOps AI Maritime Intelligence", title_style))
         story.append(Paragraph(report.title, subtitle_style))
-        
-        # Metadata box
+
         meta_data = [
-            ['Route Analysis Report', ''],
-            ['Report ID:', report.report_id[:16] + '...'],
-            ['Generated:', report.created_at.strftime('%B %d, %Y at %H:%M:%S')],
+            ["Maritime Logistics Intelligence Report", ""],
+            ["Report ID", report.report_id],
+            ["Session ID", report.session_id],
+            ["Generated", report.created_at.strftime("%B %d, %Y at %H:%M:%S")],
+            ["Route", f"{origin} → {destination}"],
         ]
-        
-        meta_table = Table(meta_data, colWidths=[2*inch, 3.5*inch])
-        meta_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), primary_color),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 14),
-            ('SPAN', (0, 0), (-1, 0)),
-            ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#f1f5f9')),
-            ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor('#1f2937')),
-            ('ALIGN', (0, 1), (0, -1), 'RIGHT'),
-            ('ALIGN', (1, 1), (1, -1), 'LEFT'),
-            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-            ('FONTNAME', (1, 1), (1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('TOPPADDING', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
-            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0')),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ]))
-        
+        meta_table = Table(meta_data, colWidths=[2.0 * inch, 4.5 * inch])
+        meta_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), primary_color),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                    ("SPAN", (0, 0), (-1, 0)),
+                    ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#f1f5f9")),
+                    ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#cbd5e1")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ]
+            )
+        )
         story.append(meta_table)
         story.append(PageBreak())
-        
-        # Full Route Analysis
-        if report.route_analysis:
-            story.append(Paragraph("📋 Complete Route Analysis", heading2_style))
-            story.append(Spacer(1, 12))
-            
-            # Parse the route analysis and format it for PDF
-            analysis_lines = report.route_analysis.split('\n')
-            
-            # Custom styles for route analysis
-            section_heading_style = ParagraphStyle(
-                'SectionHeading',
-                parent=styles['Normal'],
-                fontSize=11,
-                textColor=primary_color,
-                fontName='Helvetica-Bold',
-                spaceAfter=8,
-                spaceBefore=12
+
+        # 1) Route Overview
+        story.append(Paragraph("1. Route Overview", section_style))
+        overview_data = [
+            ["Origin", origin, "Destination", destination],
+            ["Total Distance (nm)", f"{distance_nm:,.2f}", "Estimated Transit Time (days)", f"{eta_days:,.2f}"],
+            ["Vessel Speed (knots)", f"{avg_speed:,.1f}" if avg_speed else "N/A", "Route Type", str(route_type)],
+        ]
+        overview_table = Table(overview_data, colWidths=[1.8 * inch, 1.7 * inch, 1.8 * inch, 1.2 * inch])
+        overview_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                    ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                    ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d1d5db")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
             )
-            
-            subsection_style = ParagraphStyle(
-                'SubSection',
-                parent=styles['Normal'],
-                fontSize=10,
-                textColor=colors.HexColor('#1f2937'),
-                fontName='Helvetica-Bold',
-                spaceAfter=6,
-                spaceBefore=8
-            )
-            
-            detail_style = ParagraphStyle(
-                'Detail',
-                parent=styles['Normal'],
-                fontSize=9,
-                textColor=colors.HexColor('#374151'),
-                spaceAfter=4,
-                leading=12
-            )
-            
-            for line in analysis_lines:
-                line = line.strip()
-                if not line or line.startswith('━'):  # Skip empty lines and separators
-                    continue
-                
-                # Main section headers (##)
-                if line.startswith('## '):
-                    section_title = line.replace('## ', '').strip()
-                    story.append(Spacer(1, 10))
-                    story.append(Paragraph(section_title, section_heading_style))
-                
-                # Subsection headers (###)
-                elif line.startswith('### '):
-                    subsection_title = line.replace('### ', '').strip().rstrip(':')
-                    story.append(Paragraph(subsection_title, subsection_style))
-                
-                # Bullet points
-                elif line.startswith('•') or line.startswith('✅') or line.startswith('✓') or line.startswith('⚠') or line.startswith('├─') or line.startswith('└─'):
-                    # Clean up the line
-                    clean_line = line.replace('├─', '  •').replace('└─', '  •')
-                    story.append(Paragraph(clean_line, detail_style))
-                
-                # Bold text (surrounded by **)
-                elif '**' in line:
-                    # Replace markdown bold with HTML bold for ReportLab
-                    clean_line = line.replace('**', '<b>').replace('**', '</b>')
-                    # Fix if odd number of replacements
-                    if clean_line.count('<b>') != clean_line.count('</b>'):
-                        parts = line.split('**')
-                        clean_line = ''
-                        for i, part in enumerate(parts):
-                            if i % 2 == 1:  # Odd indices are bold
-                                clean_line += f'<b>{part}</b>'
-                            else:
-                                clean_line += part
-                    story.append(Paragraph(clean_line, detail_style))
-                
-                # Regular text
-                elif line and not line.startswith('#'):
-                    story.append(Paragraph(line, detail_style))
-        
+        )
+        story.append(overview_table)
+
+        # 2) Route Waypoints
+        story.append(Paragraph("2. Route Waypoints", section_style))
+        if legs:
+            waypoint_rows = [["Leg", "From (coord)", "Mid-ocean checkpoint", "To (coord)", "Distance (nm)"]]
+            for idx, leg in enumerate(legs, 1):
+                from_coord = (leg.get("coordinates") or {}).get("from", {})
+                to_coord = (leg.get("coordinates") or {}).get("to", {})
+                mid_lat = (_safe_float(from_coord.get("lat")) + _safe_float(to_coord.get("lat"))) / 2
+                mid_lon = (_safe_float(from_coord.get("lon")) + _safe_float(to_coord.get("lon"))) / 2
+                waypoint_rows.append(
+                    [
+                        f"{idx}: {leg.get('from', 'N/A')} → {leg.get('to', 'N/A')}",
+                        _coord_text(from_coord),
+                        f"CP-{idx}: {mid_lat:.2f}, {mid_lon:.2f}",
+                        _coord_text(to_coord),
+                        f"{_safe_float(leg.get('distance_nm')):,.1f}",
+                    ]
+                )
+            waypoint_table = Table(waypoint_rows, colWidths=[1.6 * inch, 1.2 * inch, 1.6 * inch, 1.2 * inch, 0.9 * inch])
+            waypoint_table.setStyle(_table_style())
+            story.append(waypoint_table)
         else:
-            # Fallback to summary if no full analysis
-            story.append(Paragraph("📊 Executive Summary", heading2_style))
+            story.append(Paragraph("No leg-level waypoint data available for this route.", body_style))
+
+        # 3) Maritime Chokepoint Analysis
+        story.append(Paragraph("3. Maritime Chokepoint Analysis", section_style))
+        major_chokepoints = [
+            "Strait of Hormuz",
+            "Strait of Malacca",
+            "Bab el-Mandeb",
+            "Suez Canal",
+            "Panama Canal",
+        ]
+        detected = {}
+        for cp in _safe_list(route_data.get("chokepoints")):
+            detected[str(cp)] = {"distance_km": None}
+        for leg in legs:
+            canal = leg.get("canal_name")
+            if canal:
+                detected[str(canal)] = {"distance_km": 0.0}
+            for cp in _safe_list(leg.get("chokepoints_nearby")):
+                name = str(cp.get("name") or "")
+                if not name:
+                    continue
+                dist = cp.get("distance_km")
+                if name not in detected or detected[name].get("distance_km") is None:
+                    detected[name] = {"distance_km": dist}
+                elif dist is not None:
+                    detected[name]["distance_km"] = min(_safe_float(dist), _safe_float(detected[name]["distance_km"]))
+
+        chokepoint_rows = [["Chokepoint", "Detected", "Nearest distance (km)", "Risk implication"]]
+        chokepoint_count = 0
+        for name in major_chokepoints:
+            info = detected.get(name)
+            is_detected = info is not None
+            if is_detected:
+                chokepoint_count += 1
+            risk_note = "Normal routing exposure"
+            if name in {"Strait of Hormuz", "Bab el-Mandeb"} and is_detected:
+                risk_note = "Elevated security exposure"
+            elif name in {"Suez Canal", "Panama Canal"} and is_detected:
+                risk_note = "Canal transit delay/toll sensitivity"
+            elif name == "Strait of Malacca" and is_detected:
+                risk_note = "Congestion and weather bottleneck"
+            chokepoint_rows.append(
+                [
+                    name,
+                    "Yes" if is_detected else "No",
+                    f"{_safe_float(info.get('distance_km')):,.1f}" if is_detected and info.get("distance_km") is not None else "N/A",
+                    risk_note if is_detected else "No immediate chokepoint exposure",
+                ]
+            )
+        chokepoint_table = Table(chokepoint_rows, colWidths=[1.8 * inch, 0.8 * inch, 1.3 * inch, 2.6 * inch])
+        chokepoint_table.setStyle(_table_style())
+        story.append(chokepoint_table)
+        chokepoint_risk_score = min(5.0, 1.0 + (0.8 * chokepoint_count))
+        story.append(Paragraph(f"Chokepoint exposure score: <b>{chokepoint_risk_score:.2f}/5</b>.", body_style))
+
+        # 4) Geopolitical Risk
+        story.append(Paragraph("4. Geopolitical Risk", section_style))
+        geopolitical_by_country: Dict[str, Dict[str, Any]] = {}
+        for p in _safe_list(route_data.get("political_risks")):
+            country = str(p.get("country") or "").strip()
+            if not country:
+                continue
+            score = _safe_float(p.get("likelihood_score"), 1.0)
+            entry = geopolitical_by_country.get(country, {"score": 1.0, "risk_type": "General risk"})
+            if score >= entry["score"]:
+                geopolitical_by_country[country] = {
+                    "score": score,
+                    "risk_type": p.get("risk_type") or entry["risk_type"],
+                }
+        if not geopolitical_by_country:
+            # Fallback using leg-level country score.
+            for leg in legs:
+                countries = _safe_list(leg.get("countries_crossed"))
+                leg_pol = _safe_float(leg.get("political_risk_score"), 1.0)
+                for c in countries:
+                    cur = geopolitical_by_country.get(c, {"score": 1.0, "risk_type": "Route-adjacent political risk"})
+                    if leg_pol >= cur["score"]:
+                        geopolitical_by_country[c] = {"score": leg_pol, "risk_type": cur["risk_type"]}
+
+        geo_rows = [["Country", "Political score", "Risk band", "Primary factor"]]
+        geo_scores = []
+        for country, item in sorted(geopolitical_by_country.items(), key=lambda x: x[1]["score"], reverse=True):
+            score = _safe_float(item.get("score"), 1.0)
+            geo_scores.append(score)
+            geo_rows.append(
+                [
+                    country,
+                    f"{score:.2f}/5",
+                    _risk_label(score),
+                    str(item.get("risk_type") or "General risk"),
+                ]
+            )
+        if len(geo_rows) == 1:
+            geo_rows.append(["N/A", "1.00/5", "Low", "No material geopolitical alerts"])
+        geo_table = Table(geo_rows, colWidths=[1.5 * inch, 1.1 * inch, 1.0 * inch, 3.1 * inch])
+        geo_table.setStyle(_table_style())
+        story.append(geo_table)
+        overall_geo = max(geo_scores) if geo_scores else 1.0
+        story.append(Paragraph(f"Overall geopolitical risk score: <b>{overall_geo:.2f}/5 ({_risk_label(overall_geo)})</b>.", body_style))
+
+        # 5) Supply Chain Disruption Intelligence
+        story.append(Paragraph("5. Supply Chain Disruption Intelligence", section_style))
+        disruption_alerts = _safe_list(route_data.get("disruption_alerts"))
+        disruption_count = len(disruption_alerts)
+        latest_alert = None
+        if disruption_alerts:
+            latest_alert = sorted(
+                disruption_alerts,
+                key=lambda a: str(a.get("published_at") or a.get("publication_date") or ""),
+                reverse=True,
+            )[0]
+
+        story.append(
+            Paragraph(
+                f"Disruption alerts linked to route: <b>{disruption_count}</b>. "
+                + (
+                    f"Latest alert: {latest_alert.get('title') or latest_alert.get('summary') or 'N/A'}."
+                    if latest_alert
+                    else "No active disruption alerts for route countries."
+                ),
+                body_style,
+            )
+        )
+        if disruption_alerts:
+            dis_rows = [["Country", "Risk score", "Alert headline", "Published"]]
+            for a in disruption_alerts[:8]:
+                headline = (a.get("title") or a.get("summary") or "N/A")
+                if len(headline) > 90:
+                    headline = headline[:87] + "..."
+                dis_rows.append(
+                    [
+                        str(a.get("country") or "N/A"),
+                        f"{_safe_float(a.get('risk_score'), 1.0):.1f}/5",
+                        headline,
+                        str(a.get("published_at") or a.get("publication_date") or "N/A"),
+                    ]
+                )
+            dis_table = Table(dis_rows, colWidths=[1.0 * inch, 0.8 * inch, 3.7 * inch, 1.2 * inch])
+            dis_table.setStyle(_table_style())
+            story.append(dis_table)
+
+        # 6) Weather Risk
+        story.append(Paragraph("6. Weather Risk", section_style))
+        weather = route_data.get("weather_conditions", {}) if isinstance(route_data.get("weather_conditions"), dict) else {}
+        weather_score = _safe_float(weather.get("weather_risk_score", weather.get("risk_score", 0.0)), 0.0)
+        if weather_score <= 0:
+            weather_score = max([_safe_float((leg.get("weather") or {}).get("risk_score"), 0.0) for leg in legs] or [1.0])
+        avg_wind = 0.0
+        avg_wave = 0.0
+        if legs:
+            winds = [_safe_float((leg.get("weather") or {}).get("avg_wind_speed_knots"), 0.0) for leg in legs]
+            waves = [_safe_float((leg.get("weather") or {}).get("avg_wave_height_m"), 0.0) for leg in legs]
+            avg_wind = sum(winds) / len(winds) if winds else 0.0
+            avg_wave = sum(waves) / len(waves) if waves else 0.0
+        weather_condition = weather.get("condition") or "Standard marine weather profile"
+        weather_rows = [
+            ["Condition", "Weather risk", "Avg wind (knots)", "Sea state", "Storm probability"],
+            [
+                str(weather_condition),
+                f"{weather_score:.2f}/5 ({_risk_label(weather_score)})",
+                f"{avg_wind:.1f}" if avg_wind else "N/A",
+                _sea_state(avg_wave if avg_wave else 1.2),
+                _storm_probability(weather_score),
+            ],
+        ]
+        weather_table = Table(weather_rows, colWidths=[2.7 * inch, 1.2 * inch, 1.0 * inch, 0.8 * inch, 0.8 * inch])
+        weather_table.setStyle(_table_style())
+        story.append(weather_table)
+
+        # 7) Cost Breakdown
+        story.append(Paragraph("7. Cost Breakdown", section_style))
+        cost_est = route_data.get("cost_estimation", {}) if isinstance(route_data.get("cost_estimation"), dict) else {}
+        breakdown = cost_est.get("breakdown_usd", {}) if isinstance(cost_est.get("breakdown_usd"), dict) else {}
+        if not breakdown and isinstance(summary.get("cost_breakdown_usd"), dict):
+            breakdown = summary.get("cost_breakdown_usd")
+        if not breakdown and legs:
+            breakdown = {
+                "fuel": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("fuel")) for l in legs),
+                "crew": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("crew")) for l in legs),
+                "insurance": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("insurance")) for l in legs),
+                "port_fees": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("port_fees")) for l in legs),
+                "canal_tolls": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("canal_tolls")) for l in legs),
+                "security_surcharge": sum(_safe_float((l.get("cost_breakdown_usd") or {}).get("security_surcharge")) for l in legs),
+            }
+
+        fuel_cost = _safe_float(breakdown.get("fuel"))
+        crew_cost = _safe_float(breakdown.get("crew"))
+        insurance_cost = _safe_float(breakdown.get("insurance"))
+        port_fees = _safe_float(breakdown.get("port_fees"))
+        canal_tolls = _safe_float(breakdown.get("canal_tolls"))
+        security_surcharge = _safe_float(breakdown.get("security_surcharge"))
+        total_cost = _safe_float(cost_est.get("total_cost_usd", summary.get("total_cost_usd", 0.0)))
+        if total_cost <= 0:
+            total_cost = fuel_cost + crew_cost + insurance_cost + port_fees + canal_tolls + security_surcharge
+
+        cost_rows = [
+            ["Cost component", "USD"],
+            ["Fuel cost", _fmt_currency(fuel_cost)],
+            ["Crew cost", _fmt_currency(crew_cost)],
+            ["Insurance", _fmt_currency(insurance_cost)],
+            ["Port fees", _fmt_currency(port_fees)],
+            ["Canal tolls", _fmt_currency(canal_tolls)],
+            ["Security surcharge", _fmt_currency(security_surcharge)],
+            ["Total cost", _fmt_currency(total_cost)],
+        ]
+        cost_table = Table(cost_rows, colWidths=[3.2 * inch, 3.5 * inch])
+        cost_table.setStyle(_table_style())
+        story.append(cost_table)
+
+        # 8) Carbon Emissions
+        story.append(Paragraph("8. Carbon Emissions", section_style))
+        emissions = route_data.get("emissions_estimation", {}) if isinstance(route_data.get("emissions_estimation"), dict) else {}
+        co2_tons = _safe_float(emissions.get("estimated_co2_tons", summary.get("estimated_co2_tons", 0.0)))
+        if co2_tons <= 0:
+            co2_tons = sum(_safe_float(leg.get("estimated_co2_tons")) for leg in legs)
+        co2_intensity = _safe_float(emissions.get("co2_intensity_tons_per_nm", 0.0))
+        if co2_intensity <= 0 and distance_nm > 0:
+            co2_intensity = co2_tons / distance_nm
+
+        emissions_rows = [
+            ["Distance (nm)", "Estimated CO2 (tons)", "CO2 intensity (tons/nm)"],
+            [f"{distance_nm:,.2f}", f"{co2_tons:,.2f}", f"{co2_intensity:.4f}"],
+        ]
+        emissions_table = Table(emissions_rows, colWidths=[2.0 * inch, 2.3 * inch, 2.4 * inch])
+        emissions_table.setStyle(_table_style())
+        story.append(emissions_table)
+
+        # 9) Voyage Timeline
+        story.append(Paragraph("9. Voyage Timeline", section_style))
+        timeline = _safe_list(route_data.get("timeline_summary"))
+        if not timeline and legs:
+            # Fallback from per-leg timeline fragments.
+            for idx, leg in enumerate(legs, 1):
+                for phase in _safe_list(leg.get("voyage_timeline")):
+                    timeline.append(
+                        {
+                            "phase": phase.get("phase"),
+                            "start_day_offset": phase.get("start_day_offset"),
+                            "end_day_offset": phase.get("end_day_offset"),
+                            "duration_days": phase.get("duration_days"),
+                            "leg": idx,
+                        }
+                    )
+
+        if timeline:
+            time_rows = [["Leg", "Phase", "Start", "End", "Duration (days)"]]
+            for t in timeline[:24]:
+                phase = str(t.get("phase") or "N/A").replace("_", " ")
+                time_rows.append(
+                    [
+                        str(t.get("leg") or "-"),
+                        phase[:42] + ("..." if len(phase) > 42 else ""),
+                        str(t.get("start_time_utc") or f"Day {t.get('start_day_offset', '-') }"),
+                        str(t.get("end_time_utc") or f"Day {t.get('end_day_offset', '-') }"),
+                        str(t.get("duration_days") if t.get("duration_days") is not None else "N/A"),
+                    ]
+                )
+            time_table = Table(time_rows, colWidths=[0.5 * inch, 2.8 * inch, 1.3 * inch, 1.3 * inch, 0.8 * inch])
+            time_table.setStyle(_table_style())
+            story.append(time_table)
+        else:
+            story.append(Paragraph("Timeline data unavailable; route timing could not be decomposed into checkpoints.", body_style))
+
+        # 10) Operational Recommendations
+        story.append(Paragraph("10. Operational Recommendations", section_style))
+        congestion = route_data.get("congestion_risk", {}) if isinstance(route_data.get("congestion_risk"), dict) else {}
+        congestion_score = _safe_float(congestion.get("overall_risk_score", 1.0), 1.0)
+
+        dynamic_recs: List[str] = []
+        if chokepoint_count > 0:
+            dynamic_recs.append("Prepare chokepoint contingency playbooks and monitor naval advisories every 6 hours.")
+        if overall_geo >= 3:
+            dynamic_recs.append("Escalate geopolitical monitoring for route-adjacent countries and pre-approve alternate ports.")
+        if disruption_count > 0:
+            dynamic_recs.append("Revalidate ETA daily against live disruption alerts and reserve berth windows at destination.")
+        if weather_score >= 3:
+            dynamic_recs.append("Issue heavy-weather routing instructions and increase fuel/weather buffers before departure.")
+        if congestion_score >= 3:
+            dynamic_recs.append("Negotiate priority slotting at congested terminals to reduce idle time and demurrage.")
+        if co2_intensity > 0.08:
+            dynamic_recs.append("Adopt eco-speed profile and trim optimization to reduce carbon intensity on open-ocean segments.")
+        if total_cost > 300000:
+            dynamic_recs.append("Run a commercial sensitivity check on fuel and insurance assumptions before vessel nomination.")
+        if not dynamic_recs:
+            dynamic_recs.append("Maintain standard voyage monitoring cadence and keep alternate routing options pre-approved.")
+
+        all_recommendations: List[str] = []
+        seen = set()
+        for rec in dynamic_recs + (report.recommendations or []):
+            if rec and rec not in seen:
+                all_recommendations.append(rec)
+                seen.add(rec)
+
+        for rec in all_recommendations[:12]:
+            story.append(Paragraph(f"• {rec}", bullet_style))
+
+        if parse_error:
             story.append(Spacer(1, 8))
-            
-            summary_para = Paragraph(report.executive_summary, body_style)
-            summary_data = [[summary_para]]
-            summary_table = Table(summary_data, colWidths=[6.5*inch])
-            summary_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
-                ('BORDER', (0, 0), (-1, -1), 2, accent_color),
-                ('TOPPADDING', (0, 0), (-1, -1), 15),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
-                ('LEFTPADDING', (0, 0), (-1, -1), 15),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 15),
-            ]))
-            story.append(summary_table)
-            story.append(Spacer(1, 20))
-        
-        story.append(Spacer(1, 30))
-        
-        # Footer
+            story.append(
+                Paragraph(
+                    f"Note: Raw route_analysis parsing warning: {parse_error}",
+                    ParagraphStyle(
+                        "RouteWarn",
+                        parent=styles["Normal"],
+                        fontSize=8.5,
+                        textColor=warning_color,
+                    ),
+                )
+            )
+
+        story.append(Spacer(1, 24))
         footer_style = ParagraphStyle(
-            'Footer',
-            parent=styles['Normal'],
-            fontSize=9,
+            "RouteFooter",
+            parent=styles["Normal"],
+            fontSize=8.5,
             textColor=secondary_color,
             alignment=TA_CENTER,
-            spaceAfter=0
         )
-        story.append(Spacer(1, 0.5*inch))
         story.append(Paragraph("─" * 80, footer_style))
-        story.append(Paragraph("Generated by ChainOps AI Intelligence Platform | Comprehensive Route Analysis", footer_style))
+        story.append(Paragraph("Generated by ChainOps AI Intelligence Platform | Maritime Logistics Intelligence", footer_style))
         story.append(Paragraph(f"Report ID: {report.report_id}", footer_style))
-        
-        # Build PDF
+
         doc.build(story)
-        
         return filepath
     
     async def generate_downloadable_report(self, report: RiskReport) -> str:
@@ -526,7 +867,7 @@ class ReportingAgent:
         filepath = os.path.join(self.reports_dir, filename)
         
         # Handle route reports specially
-        if report.report_type == "route":
+        if report.report_type in {"route", "multi_port_route"}:
             return await self._generate_route_pdf(report, filepath)
         
         # Create document with margins
