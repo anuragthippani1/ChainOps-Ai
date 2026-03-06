@@ -4,8 +4,6 @@
 
 # ChainOps AI
 
-**AI-Powered Maritime Intelligence Control Tower**
-
 ChainOps AI aggregates political risks, supply chain disruptions, chokepoint status, and route analyses so **ship captains**, **shipping operators**, and **cargo logistics managers** can make fast decisions without manually checking multiple systems. Monitor global shipping risks, get route intelligence, and receive critical alerts in one place.
 
 ---
