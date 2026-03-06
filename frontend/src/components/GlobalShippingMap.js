@@ -12,6 +12,13 @@ const CHOKEPOINT_COORDS = {
   "Bab el-Mandeb": [43.3, 12.6],
   "Strait of Malacca": [100.8, 2.5],
   "Panama Canal": [-79.6, 9.1],
+  "Taiwan Strait": [119.5, 24.5],
+  "Strait of Gibraltar": [-5.6, 36.0],
+  "English Channel": [1.5, 50.5],
+  "Bosphorus": [29.0, 41.0],
+  "Strait of Dover": [1.5, 51.1],
+  "Sunda Strait": [105.8, -5.9],
+  "Strait of Lombok": [115.8, -8.4],
 };
 
 const VOYAGE_ROUTE_WAYPOINTS = [
@@ -53,6 +60,11 @@ const getDisruptionCoord = (alert) => {
   if (text.includes("suez") || text.includes("egypt")) return CHOKEPOINT_COORDS["Suez Canal"];
   if (text.includes("malacca") || text.includes("singapore")) return CHOKEPOINT_COORDS["Strait of Malacca"];
   if (text.includes("panama")) return CHOKEPOINT_COORDS["Panama Canal"];
+  if (text.includes("taiwan")) return CHOKEPOINT_COORDS["Taiwan Strait"];
+  if (text.includes("gibraltar")) return CHOKEPOINT_COORDS["Strait of Gibraltar"];
+  if (text.includes("bosphorus")) return CHOKEPOINT_COORDS["Bosphorus"];
+  if (text.includes("sunda")) return CHOKEPOINT_COORDS["Sunda Strait"];
+  if (text.includes("lombok")) return CHOKEPOINT_COORDS["Strait of Lombok"];
   for (const [country, coord] of Object.entries(COUNTRY_COORDS)) {
     if (text.includes(country.toLowerCase())) return coord;
   }

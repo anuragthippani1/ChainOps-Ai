@@ -13,6 +13,16 @@ AIS_SAMPLE_VESSELS: List[Dict[str, float | str]] = [
     {"vessel_name": "Maersk Atlas", "lat": 2.1, "lon": 101.1, "speed": 15.1, "heading": 305.0},
     {"vessel_name": "Ever Zenith", "lat": 32.3, "lon": 121.7, "speed": 14.8, "heading": 205.0},
     {"vessel_name": "OOCL Pacific", "lat": 35.2, "lon": 140.1, "speed": 16.0, "heading": 118.0},
+    {"vessel_name": "Hapag Lloyd Tokyo", "lat": 22.5, "lon": 115.2, "speed": 13.2, "heading": 240.0},
+    {"vessel_name": "COSCO Galaxy", "lat": 8.2, "lon": 78.5, "speed": 14.5, "heading": 270.0},
+    {"vessel_name": "MSC Olympia", "lat": 38.5, "lon": -9.2, "speed": 11.8, "heading": 45.0},
+    {"vessel_name": "ONE Stork", "lat": 5.8, "lon": 52.1, "speed": 12.2, "heading": 340.0},
+    {"vessel_name": "PIL Singapore", "lat": 1.3, "lon": 103.9, "speed": 10.5, "heading": 180.0},
+    {"vessel_name": "Yang Ming Unity", "lat": 30.8, "lon": 32.2, "speed": 8.2, "heading": 0.0},
+    {"vessel_name": "HMM Algeciras", "lat": 35.1, "lon": 129.0, "speed": 15.0, "heading": 310.0},
+    {"vessel_name": "ZIM Rotterdam", "lat": 51.9, "lon": 4.4, "speed": 6.0, "heading": 90.0},
+    {"vessel_name": "APL Charleston", "lat": -33.9, "lon": 18.4, "speed": 14.0, "heading": 60.0},
+    {"vessel_name": "MOL Triumph", "lat": -6.1, "lon": 106.8, "speed": 13.8, "heading": 125.0},
 ]
 
 

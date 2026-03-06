@@ -1233,6 +1233,13 @@ MAJOR_CHOKEPOINTS = [
     "Strait of Malacca",
     "Panama Canal",
     "Bab el-Mandeb",
+    "Taiwan Strait",
+    "Strait of Gibraltar",
+    "English Channel",
+    "Bosphorus",
+    "Strait of Dover",
+    "Sunda Strait",
+    "Strait of Lombok",
 ]
 
 
@@ -1249,6 +1256,13 @@ def _chokepoint_mentioned_in_text(text: str) -> List[str]:
         ("panama canal", "Panama Canal"),
         ("bab el-mandeb", "Bab el-Mandeb"),
         ("bab el mandeb", "Bab el-Mandeb"),
+        ("taiwan strait", "Taiwan Strait"),
+        ("gibraltar", "Strait of Gibraltar"),
+        ("english channel", "English Channel"),
+        ("bosphorus", "Bosphorus"),
+        ("strait of dover", "Strait of Dover"),
+        ("sunda strait", "Sunda Strait"),
+        ("lombok", "Strait of Lombok"),
     ]
     for keyword, name in mappings:
         if keyword in t and name not in found:
