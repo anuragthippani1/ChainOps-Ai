@@ -38,6 +38,11 @@ LOGISTICS_RISK_SIGNALS = {
     "maritime accident": ["maritime accident", "ship accident", "vessel accident", "collision"],
 }
 
+# Keywords that force high/critical risk scores (1-5 scale)
+HIGH_SEVERITY_KEYWORDS = ["attack", "missile", "conflict", "war", "bombing", "strike target"]
+MEDIUM_SEVERITY_KEYWORDS = ["strike", "blockade", "port shutdown", "port closure", "canal closure"]
+WEATHER_DISRUPTION_KEYWORDS = ["typhoon", "hurricane", "cyclone", "storm", "gale", "severe weather"]
+
 DISRUPTION_TRIGGER_KEYWORDS = [
     "port congestion",
     "shipping delays",
@@ -54,14 +59,17 @@ DISRUPTION_TRIGGER_KEYWORDS = [
 ]
 
 # Maritime chokepoints that should boost disruption detection and map to countries.
+# Red Sea attacks map to Bab el-Mandeb chokepoint (Yemen, Somalia, Saudi Arabia).
 CHOKEPOINT_LOCATION_COUNTRIES = {
     "suez canal": ["Egypt"],
-    "red sea": ["Saudi Arabia", "Yemen"],
+    "red sea": ["Yemen", "Saudi Arabia", "Egypt", "Somalia", "Djibouti"],
+    "bab el-mandeb": ["Yemen", "Somalia", "Djibouti", "Saudi Arabia", "Eritrea"],
+    "bab el mandeb": ["Yemen", "Somalia", "Djibouti", "Saudi Arabia", "Eritrea"],
     "panama canal": ["Panama"],
-    "strait of hormuz": ["Iran", "United Arab Emirates"],
-    "hormuz strait": ["Iran", "United Arab Emirates"],
-    "malacca strait": ["Singapore", "Malaysia"],
-    "strait of malacca": ["Singapore", "Malaysia"],
+    "strait of hormuz": ["Iran", "United Arab Emirates", "Oman"],
+    "hormuz strait": ["Iran", "United Arab Emirates", "Oman"],
+    "malacca strait": ["Singapore", "Malaysia", "Indonesia"],
+    "strait of malacca": ["Singapore", "Malaysia", "Indonesia"],
 }
 
 # Countries to prioritize due to global trade/energy impact.
@@ -110,23 +118,35 @@ class NewsNLPProcessor:
         return hits
 
     def _compute_risk_score(self, text: str, signals: List[str]) -> int:
-        """Assign risk score 1-5 based on content and signals."""
+        """Assign risk score 1-5 based on content and signals. Uses severity keyword rules."""
         score = 1
         t = (text or "").lower()
 
+        # High severity: attack, missile, conflict, war → risk 4 or 5
+        if any(k in t for k in HIGH_SEVERITY_KEYWORDS):
+            score = max(score, 5 if any(x in t for x in ["attack", "missile", "war", "bombing"]) else 4)
+
+        # Medium severity: strike, blockade, port shutdown → risk 3 or 4
+        elif any(k in t for k in MEDIUM_SEVERITY_KEYWORDS):
+            score = max(score, 4 if "blockade" in t or "port shutdown" in t else 3)
+
+        # Weather: typhoon, storm, cyclone → risk 3
+        elif any(k in t for k in WEATHER_DISRUPTION_KEYWORDS):
+            score = max(score, 3)
+
         # Critical logistics signals
         if any(s in ["canal blockage", "maritime attack", "maritime accident", "oil supply disruption", "maritime chokepoint"] for s in signals):
-            score += 2
+            score = max(score, 4)
         if any(s in ["shipping delays", "port congestion", "cargo disruption", "container shortage", "transport disruption"] for s in signals):
-            score += 1
+            score = max(score, min(score + 1, 5))
 
         # Keywords that boost score
         high = ["blockage", "strike", "attack", "sanctions", "ban", "critical", "closure"]
         med = ["delay", "disruption", "backlog", "congestion", "restriction"]
         if any(k in t for k in high):
-            score += 2
+            score = min(max(score, 3), 5)
         elif any(k in t for k in med):
-            score += 1
+            score = min(score + 1, 5)
 
         return min(max(score, 1), 5)
 
@@ -306,7 +326,7 @@ Respond with valid JSON only, no markdown."""
             risk_score = max(risk_score, 3)
         category = self._assign_category(text, signals)
 
-        return SupplyChainNewsAlert(
+        result = SupplyChainNewsAlert(
             alert_id=str(uuid.uuid4()),
             title=title[:200],
             summary=summary[:500],
@@ -321,3 +341,5 @@ Respond with valid JSON only, no markdown."""
             city=city,
             port=port,
         )
+        print(f"[DEBUG] Disruption detected: country={country}, risk_score={risk_score}, risk_signals={signals[:5]}")
+        return result

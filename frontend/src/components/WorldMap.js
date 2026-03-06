@@ -75,17 +75,18 @@ const WorldMap = ({ worldRiskData = {} }) => {
   };
 
   const getRiskColor = (riskLevel) => {
-    if (riskLevel >= 4) return "#EF4444"; // Critical Risk - Bright Red
-    if (riskLevel === 3) return "#F97316"; // High Risk - Orange
-    if (riskLevel === 2) return "#FDE047"; // Medium Risk - Yellow
-    if (riskLevel === 1) return "#10B981"; // Low Risk - Green
-    return "#E5E7EB"; // No Data - Very Light Gray
+    // 1 → Low (green), 2–3 → Medium (yellow), 4 → High (orange), 5 → Critical (red)
+    if (riskLevel >= 5) return "#EF4444"; // Critical - Red
+    if (riskLevel === 4) return "#F97316"; // High - Orange
+    if (riskLevel === 2 || riskLevel === 3) return "#FDE047"; // Medium - Yellow
+    if (riskLevel === 1) return "#10B981"; // Low - Green
+    return "#E5E7EB"; // No Data - Light Gray
   };
 
   const getRiskLabel = (riskLevel) => {
-    if (riskLevel >= 4) return "Critical Risk";
-    if (riskLevel === 3) return "High Risk";
-    if (riskLevel === 2) return "Medium Risk";
+    if (riskLevel >= 5) return "Critical Risk";
+    if (riskLevel === 4) return "High Risk";
+    if (riskLevel === 2 || riskLevel === 3) return "Medium Risk";
     if (riskLevel === 1) return "Low Risk";
     return "No Data";
   };
@@ -133,6 +134,23 @@ const WorldMap = ({ worldRiskData = {} }) => {
       const disruptionCount = riskData.disruption_count ?? 0;
       const latestDisruption = riskData.latest_disruption || "None";
 
+      const displaySignals = riskData.risk_sources_display?.length
+        ? riskData.risk_sources_display
+        : riskData.risk_sources?.length
+          ? riskData.risk_sources.map((s) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()))
+          : [];
+      const signalsHtml =
+        displaySignals.length > 0
+          ? `
+            <div class="mt-1.5">
+              <span class="text-gray-500 dark:text-gray-400 block mb-0.5">Signals:</span>
+              <ul class="list-disc list-inside space-y-0.5 text-gray-700 dark:text-gray-300">
+                ${displaySignals.map((s) => `<li>${s}</li>`).join("")}
+              </ul>
+            </div>
+          `
+          : "";
+
       setTooltipContent(`
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-300 dark:border-gray-600 p-3 max-w-xs">
           <div class="flex items-center space-x-2 mb-2">
@@ -141,7 +159,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
           </div>
           <div class="space-y-1.5 text-xs">
             <div>
-              <span class="text-gray-500 dark:text-gray-400">Risk level:</span>
+              <span class="text-gray-500 dark:text-gray-400">Risk Level:</span>
               <span class="ml-1 inline-flex px-2 py-0.5 rounded font-medium" style="background-color: ${riskColor}; color: white;">
                 ${riskLabel}
               </span>
@@ -150,6 +168,7 @@ const WorldMap = ({ worldRiskData = {} }) => {
               <span class="text-gray-500 dark:text-gray-400">Disruptions detected:</span>
               <span class="ml-1 font-medium text-gray-900 dark:text-gray-100">${disruptionCount}</span>
             </div>
+            ${signalsHtml}
             <div>
               <span class="text-gray-500 dark:text-gray-400">Latest:</span>
               <span class="ml-1 text-gray-700 dark:text-gray-300 line-clamp-2">${latestDisruption}</span>

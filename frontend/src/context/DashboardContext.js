@@ -27,6 +27,19 @@ export const DashboardProvider = ({ children }) => {
   const [sessions, setSessions] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [reports, setReports] = useState([]);
+  const [shippingIntelligence, setShippingIntelligence] = useState({
+    active_routes: 0,
+    high_risk_routes: 0,
+    disruption_alerts: 0,
+    chokepoint_alerts: 0,
+    recent_route_analysis: [],
+    critical_alerts: [],
+    top_risk_routes: [],
+    chokepoint_status: [],
+    world_risk_data: {},
+    loading: true,
+    error: null,
+  });
 
   // Generate session ID on component mount
   useEffect(() => {
@@ -64,6 +77,36 @@ export const DashboardProvider = ({ children }) => {
         ...prev,
         loading: false,
         error: message,
+      }));
+    }
+  };
+
+  // Load shipping intelligence (maritime control tower metrics)
+  const loadShippingIntelligence = async () => {
+    try {
+      setShippingIntelligence((prev) => ({ ...prev, loading: true, error: null }));
+      const response = await axios.get(`${config.API_URL}/api/shipping-intelligence`, {
+        timeout: 25000,
+      });
+      setShippingIntelligence({
+        active_routes: response.data.active_routes ?? 0,
+        high_risk_routes: response.data.high_risk_routes ?? 0,
+        disruption_alerts: response.data.disruption_alerts ?? 0,
+        chokepoint_alerts: response.data.chokepoint_alerts ?? 0,
+        recent_route_analysis: response.data.recent_route_analysis ?? [],
+        critical_alerts: response.data.critical_alerts ?? [],
+        top_risk_routes: response.data.top_risk_routes ?? [],
+        chokepoint_status: response.data.chokepoint_status ?? [],
+        world_risk_data: response.data.world_risk_data ?? {},
+        loading: false,
+        error: null,
+      });
+    } catch (error) {
+      console.error("Error loading shipping intelligence:", error);
+      setShippingIntelligence((prev) => ({
+        ...prev,
+        loading: false,
+        error: error.message || "Failed to load shipping intelligence",
       }));
     }
   };
@@ -125,6 +168,7 @@ export const DashboardProvider = ({ children }) => {
         !!response.data.response?.data?.report_id;
       if (response.data.type === "route" || hasGeneratedReport) {
         loadReports();
+        loadShippingIntelligence();
       }
 
       return response.data;
@@ -282,9 +326,16 @@ export const DashboardProvider = ({ children }) => {
     loadDashboardData();
     loadReports();
     loadSessions();
+    loadShippingIntelligence();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    // Removed automatic polling to prevent page reloads
-    // Users can manually refresh data when needed
+  // Refresh shipping intelligence every 60 seconds (maritime control tower)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadShippingIntelligence();
+    }, 60000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -298,6 +349,8 @@ export const DashboardProvider = ({ children }) => {
 
   const value = {
     dashboardData,
+    shippingIntelligence,
+    loadShippingIntelligence,
     sessionId,
     currentSession,
     sessions,

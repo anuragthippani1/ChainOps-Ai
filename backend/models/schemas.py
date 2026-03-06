@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -21,6 +21,9 @@ class PoliticalRisk(BaseModel):
     publication_date: str
     source_title: str
     source_url: str
+    risk_level: Optional[int] = None  # 1-5 derived level for dashboard/heatmap merge
+    risk_label: Optional[str] = None  # low|medium|high|critical
+    risk_sources: List[str] = Field(default_factory=list)  # keyword/chokepoint sources
 
 class ScheduleRisk(BaseModel):
     equipment_id: str

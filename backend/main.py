@@ -7,9 +7,11 @@ import uvicorn
 from typing import List, Dict, Any, Optional
 import asyncio
 import json
+import os
 import re
 from datetime import datetime
 import uuid
+import aiohttp
 
 from agents.assistant_agent import AssistantAgent
 from agents.chatbot_manager import ChatbotManager
@@ -21,6 +23,8 @@ from database.mongodb import MongoDBClient
 from models.schemas import QueryRequest, RiskReport, PoliticalRisk, ScheduleRisk, Session, SessionCreate, SessionUpdate
 from services.supply_chain_news_service import SupplyChainNewsService
 from data.logistics_regions import build_world_risk_from_alerts, get_canonical_country
+from data.ports import MAJOR_PORTS
+from data.ais_sample import AIS_SAMPLE_VESSELS, project_position
 
 load_dotenv()  # load variables from backend/.env if present
 
@@ -57,6 +61,12 @@ DEFAULT_DASHBOARD_POLITICAL_COUNTRIES = [
     "Russia",
     "China",
     "Iran",
+    "Ukraine",
+    "Yemen",
+    "Somalia",
+    "Sudan",
+    "Israel",
+    "Libya",
     "Pakistan",
     "Venezuela",
     "India",
@@ -66,15 +76,51 @@ DEFAULT_DASHBOARD_POLITICAL_COUNTRIES = [
     "Japan",
 ]
 
+MARITIME_WEATHER_POINTS = [
+    {"id": "suez", "name": "Suez Corridor", "lat": 30.3, "lon": 32.3, "radius": 12},
+    {"id": "hormuz", "name": "Strait of Hormuz", "lat": 26.5, "lon": 56.2, "radius": 12},
+    {"id": "malacca", "name": "Strait of Malacca", "lat": 2.5, "lon": 100.8, "radius": 12},
+    {"id": "bab-el-mandeb", "name": "Bab el-Mandeb", "lat": 12.6, "lon": 43.3, "radius": 12},
+    {"id": "arabian-sea", "name": "Arabian Sea Lane", "lat": 16.5, "lon": 63.0, "radius": 14},
+    {"id": "north-atlantic", "name": "North Atlantic Lane", "lat": 38.0, "lon": -35.0, "radius": 15},
+]
+
+OPENWEATHER_SEVERE_CODES = {200, 201, 202, 210, 211, 212, 221, 230, 231, 232, 781}
+
+COUNTRY_COORD_FALLBACK = {
+    "Iran": [53.7, 32.4],
+    "Yemen": [48.5, 15.6],
+    "Somalia": [46.2, 5.1],
+    "Sudan": [30.2, 14.8],
+    "Ukraine": [31.2, 48.4],
+    "Egypt": [30.8, 26.8],
+    "Saudi Arabia": [45.1, 23.9],
+    "United Arab Emirates": [54.3, 23.4],
+    "Russia": [100.0, 61.0],
+    "China": [103.8, 35.8],
+    "Israel": [35.0, 31.5],
+    "Libya": [17.2, 27.0],
+    "Pakistan": [69.3, 30.4],
+    "Venezuela": [-66.2, 7.1],
+    "India": [78.9, 21.5],
+    "United States": [-98.5, 39.8],
+    "Germany": [10.2, 51.2],
+    "Japan": [138.2, 36.2],
+}
+
 latest_world_data: Dict[str, Any] = {"world_risk_data": {}, "political_risks": [], "schedule_risks": []}
 _subscribers: set = set()
 _poll_task = None
 
 async def _news_fetch_loop():
     """Fetch supply chain news every 10 minutes, filter keywords, store in MongoDB."""
+    print("[DEBUG] News fetch loop started")
     while True:
         try:
-            await news_service.run_fetch_and_store()
+            stored = await news_service.run_fetch_and_store()
+            print(f"[DEBUG] News fetch loop: stored={stored}")
+            await _refresh_disruption_cache()
+            print(f"[DEBUG] Disruption cache size after refresh: {len(_disruption_cache['alerts'])}")
         except Exception as e:
             print(f"News fetch error: {e}")
         await asyncio.sleep(600)  # 10 minutes
@@ -122,8 +168,12 @@ async def shutdown_event():
 
 async def _run_initial_news_fetch():
     await asyncio.sleep(5)
+    print("[DEBUG] Running initial news fetch")
     try:
-        await news_service.run_fetch_and_store()
+        stored = await news_service.run_fetch_and_store()
+        print(f"[DEBUG] Initial fetch stored: {stored}")
+        await _refresh_disruption_cache()
+        print(f"[DEBUG] Initial disruption cache size: {len(_disruption_cache['alerts'])}")
     except Exception as e:
         print(f"Initial news fetch: {e}")
 
@@ -625,14 +675,113 @@ async def download_report(report_id: str):
 #     pass
 
 def _serialize_risk(r):
-    """Serialize Pydantic risk model to dict (v1 .dict() or v2 .model_dump())."""
+    """Serialize and enrich political risk with text-based escalation metadata."""
     if hasattr(r, "model_dump"):
         try:
-            return r.model_dump(mode="json")
+            payload = r.model_dump(mode="json")
         except TypeError:
-            return r.model_dump()
-    return r.dict()
+            payload = r.model_dump()
+    else:
+        payload = r.dict()
+    return _enrich_political_risk_payload(payload)
 
+
+POLITICAL_ESCALATION_KEYWORDS = {
+    "war": "war",
+    "conflict": "conflict",
+    "instability": "conflict",
+    "regional instability": "conflict",
+    "sanctions": "sanctions",
+    "trade sanctions": "sanctions",
+    "military": "military_tension",
+    "military tension": "military_tension",
+}
+
+POLITICAL_MARITIME_KEYWORDS = {
+    "shipping disruption": "shipping_disruption",
+    "maritime attack": "maritime_attack",
+    "naval activity": "naval_activity",
+    "blockade": "blockade",
+    "chokepoint": "shipping_disruption",
+}
+
+CHOKEPOINT_BASELINE_BY_COUNTRY = {
+    "Iran": "hormuz_chokepoint",
+    "United Arab Emirates": "hormuz_chokepoint",
+    "Oman": "hormuz_chokepoint",
+    "Yemen": "bab_el_mandeb",
+    "Somalia": "bab_el_mandeb",
+    "Djibouti": "bab_el_mandeb",
+    "Saudi Arabia": "bab_el_mandeb",
+    "Eritrea": "bab_el_mandeb",
+    "Egypt": "suez_canal",
+}
+
+
+def _risk_label_from_level(level: int) -> str:
+    if level >= 5:
+        return "Critical"
+    if level >= 4:
+        return "High"
+    if level >= 2:
+        return "Medium"
+    return "Low"
+
+
+def _enrich_political_risk_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Escalate political risk from reasoning/source text and chokepoint proximity."""
+    if not isinstance(payload, dict):
+        return payload
+
+    country = get_canonical_country((payload.get("country") or "").strip())
+    text = " ".join(
+        str(v)
+        for v in [
+            payload.get("reasoning", ""),
+            payload.get("source_title", ""),
+            payload.get("risk_type", ""),
+        ]
+        if v
+    ).lower()
+
+    raw_score = payload.get("likelihood_score", 1)
+    try:
+        level = int(max(1, min(5, round(float(raw_score)))))
+    except Exception:
+        level = 1
+
+    sources = [s for s in (payload.get("risk_sources") or []) if isinstance(s, str)]
+
+    if any(k in text for k in POLITICAL_ESCALATION_KEYWORDS):
+        level = max(level, 4)
+        for keyword, source in POLITICAL_ESCALATION_KEYWORDS.items():
+            if keyword in text:
+                sources.append(source)
+
+    if any(k in text for k in POLITICAL_MARITIME_KEYWORDS):
+        level = max(level, 3)
+        for keyword, source in POLITICAL_MARITIME_KEYWORDS.items():
+            if keyword in text:
+                sources.append(source)
+
+    chokepoint_source = CHOKEPOINT_BASELINE_BY_COUNTRY.get(country)
+    if chokepoint_source:
+        level = max(level, 3)
+        sources.append(chokepoint_source)
+
+    payload["country"] = country or payload.get("country")
+    payload["risk_level"] = level
+    payload["risk_label"] = _risk_label_from_level(level)
+    payload["risk_sources"] = list(dict.fromkeys(sources))
+
+    # Keep backward compatibility: downstream code still uses likelihood_score.
+    try:
+        base_likelihood = float(payload.get("likelihood_score", 1))
+    except Exception:
+        base_likelihood = 1.0
+    payload["likelihood_score"] = int(max(1, min(5, max(base_likelihood, float(level)))))
+
+    return payload
 
 # Additional countries for dashboard political risk coverage (Europe, South America, Africa)
 # Merged with scheduler countries so live/sample data covers more regions
@@ -674,9 +823,12 @@ async def _refresh_disruption_cache():
     global _disruption_cache
     try:
         raw = await db_client.get_supply_chain_news_last_24h()
+        print(f"[DEBUG] _refresh_disruption_cache: raw from DB/files={len(raw)}")
         alerts = [a for a in raw if (a.get("category") or "").lower() in ALLOWED_DISRUPTION_CATEGORIES]
+        print(f"[DEBUG] _refresh_disruption_cache: after category filter={len(alerts)}, categories in raw={[a.get('category') for a in raw[:5]]}")
         _disruption_cache["alerts"] = alerts
         _disruption_cache["ts"] = datetime.utcnow().timestamp()
+        print(f"[DEBUG] Disruption cache size: {len(_disruption_cache['alerts'])}")
     except Exception as e:
         print(f"Error refreshing disruption cache: {e}")
 
@@ -728,6 +880,290 @@ async def _get_dashboard_political_risks(countries: List[str]) -> List[Dict[str,
             )
 
     return [_serialize_risk(r) for r in fallback_risks]
+
+
+def _build_country_coords_from_ports() -> Dict[str, List[float]]:
+    grouped: Dict[str, List[List[float]]] = {}
+    for _, info in MAJOR_PORTS.items():
+        country = get_canonical_country((info.get("country") or "").strip())
+        coord = info.get("coordinates") or {}
+        lat = coord.get("lat")
+        lon = coord.get("lon")
+        if not country or lat is None or lon is None:
+            continue
+        grouped.setdefault(country, []).append([float(lon), float(lat)])
+
+    country_coords: Dict[str, List[float]] = {}
+    for country, coords in grouped.items():
+        if not coords:
+            continue
+        avg_lon = sum(c[0] for c in coords) / len(coords)
+        avg_lat = sum(c[1] for c in coords) / len(coords)
+        country_coords[country] = [round(avg_lon, 4), round(avg_lat, 4)]
+    return country_coords
+
+
+COUNTRY_COORDS_FROM_PORTS = _build_country_coords_from_ports()
+
+
+def _resolve_country_coordinates(country: str) -> Optional[List[float]]:
+    canonical = get_canonical_country((country or "").strip())
+    if canonical in COUNTRY_COORDS_FROM_PORTS:
+        return COUNTRY_COORDS_FROM_PORTS[canonical]
+    return COUNTRY_COORD_FALLBACK.get(canonical)
+
+
+def _find_coordinates_in_text(text: str) -> Optional[List[float]]:
+    t = (text or "").lower()
+    chokepoints = [
+        ("suez", [32.3, 30.3]),
+        ("hormuz", [56.2, 26.5]),
+        ("malacca", [100.8, 2.5]),
+        ("panama", [-79.6, 9.1]),
+        ("bab el-mandeb", [43.3, 12.6]),
+        ("bab el mandeb", [43.3, 12.6]),
+        ("red sea", [39.0, 18.0]),
+    ]
+    for keyword, coord in chokepoints:
+        if keyword in t:
+            return coord
+
+    for country, coord in COUNTRY_COORD_FALLBACK.items():
+        if country.lower() in t:
+            return coord
+    return None
+
+
+def _is_weather_signal(alert: Dict[str, Any]) -> bool:
+    text = " ".join([
+        str(alert.get("title") or ""),
+        str(alert.get("description") or ""),
+        str(alert.get("summary") or ""),
+        " ".join(str(s) for s in (alert.get("risk_signals") or [])),
+    ]).lower()
+    weather_terms = ["typhoon", "hurricane", "cyclone", "storm", "monsoon", "flood", "gale", "squall"]
+    return any(term in text for term in weather_terms)
+
+
+def _build_critical_alerts(
+    disruption_alerts: List[Dict[str, Any]],
+    political_risks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    critical_alerts: List[Dict[str, Any]] = []
+    for a in (disruption_alerts or []):
+        if (a.get("risk_score") or 0) >= 4:
+            critical_alerts.append({
+                "type": "disruption",
+                "severity": "critical",
+                "message": a.get("title") or "High-severity disruption detected",
+                "detail": a.get("country") or a.get("port") or "",
+                "timestamp": a.get("published_at"),
+            })
+    for p in (political_risks or []):
+        try:
+            score = float(p.get("likelihood_score", 0) or 0)
+        except Exception:
+            score = 0.0
+        country = p.get("country", "")
+        pub_date = p.get("publication_date")
+        if score >= 4:
+            critical_alerts.append({
+                "type": "political",
+                "severity": "high",
+                "message": f"Political instability affecting {country} shipping corridors",
+                "detail": country,
+                "timestamp": pub_date,
+            })
+    return critical_alerts[:25]
+
+
+def _risk_radius(level: int) -> float:
+    if level >= 5:
+        return 20.0
+    if level >= 4:
+        return 16.0
+    return 12.0
+
+
+def _port_congestion_level(avg_wait_time: float, disruption_mentions: int) -> str:
+    score = (avg_wait_time * 2.2) + min(2.5, disruption_mentions * 0.6)
+    if score >= 2.6:
+        return "High"
+    if score >= 1.7:
+        return "Medium"
+    return "Low"
+
+
+def _estimate_ships_waiting(avg_wait_time: float, disruption_mentions: int, capacity: str) -> int:
+    capacity_scale = {
+        "Very High": 1.45,
+        "High": 1.2,
+        "Medium": 1.0,
+    }.get(str(capacity or "Medium"), 1.0)
+    estimated = (avg_wait_time * 18.0 * capacity_scale) + (disruption_mentions * 5.0) + 4.0
+    return max(3, int(round(estimated)))
+
+
+def _normalize_vessel_payload(raw_payload: Any) -> List[Dict[str, Any]]:
+    raw_vessels = []
+    if isinstance(raw_payload, dict):
+        raw_vessels = raw_payload.get("vessels") or raw_payload.get("data") or []
+    elif isinstance(raw_payload, list):
+        raw_vessels = raw_payload
+
+    normalized: List[Dict[str, Any]] = []
+    for idx, item in enumerate(raw_vessels):
+        if not isinstance(item, dict):
+            continue
+        lat = item.get("lat")
+        lon = item.get("lon")
+        if lat is None or lon is None:
+            coords = item.get("coordinates") or {}
+            lat = coords.get("lat")
+            lon = coords.get("lon")
+        if lat is None or lon is None:
+            continue
+        normalized.append({
+            "vessel_name": item.get("vessel_name") or item.get("name") or f"Vessel {idx + 1}",
+            "lat": float(lat),
+            "lon": float(lon),
+            "speed": float(item.get("speed") or item.get("speed_knots") or 0.0),
+            "heading": float(item.get("heading") or item.get("course") or 0.0),
+        })
+    return normalized
+
+
+async def _fetch_live_vessels() -> List[Dict[str, Any]]:
+    ais_api_url = (os.getenv("AIS_API_URL") or "").strip()
+    if not ais_api_url:
+        return []
+    ais_api_key = (os.getenv("AIS_API_KEY") or "").strip()
+
+    headers = {}
+    if ais_api_key:
+        headers["Authorization"] = f"Bearer {ais_api_key}"
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(ais_api_url, headers=headers) as response:
+                if response.status != 200:
+                    return []
+                payload = await response.json()
+                return _normalize_vessel_payload(payload)
+    except Exception:
+        return []
+
+
+def _infer_weather_events_from_alerts(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for idx, alert in enumerate(alerts or []):
+        if not _is_weather_signal(alert):
+            continue
+        text = " ".join([
+            str(alert.get("title") or ""),
+            str(alert.get("description") or ""),
+            str(alert.get("summary") or ""),
+            str(alert.get("country") or ""),
+        ])
+        coord = _find_coordinates_in_text(text) or _resolve_country_coordinates(alert.get("country") or "")
+        if not coord:
+            continue
+        events.append({
+            "id": f"weather-alert-{idx}",
+            "name": (alert.get("title") or "Marine weather event")[:80],
+            "coordinates": coord,
+            "radius": 14,
+        })
+    return events[:20]
+
+
+async def _fetch_openweather_point_event(
+    session: aiohttp.ClientSession,
+    point: Dict[str, Any],
+    api_key: str,
+) -> Optional[Dict[str, Any]]:
+    try:
+        params = {
+            "lat": point["lat"],
+            "lon": point["lon"],
+            "appid": api_key,
+            "units": "metric",
+        }
+        async with session.get("https://api.openweathermap.org/data/2.5/weather", params=params) as response:
+            if response.status != 200:
+                return None
+            payload = await response.json()
+    except Exception:
+        return None
+
+    weather = (payload.get("weather") or [{}])[0]
+    weather_id = int(weather.get("id") or 0)
+    weather_desc = str(weather.get("description") or "").strip()
+    wind_speed = float((payload.get("wind") or {}).get("speed") or 0.0)
+    is_severe = weather_id in OPENWEATHER_SEVERE_CODES or wind_speed >= 14.0
+
+    if not is_severe:
+        return None
+
+    title = weather_desc.title() if weather_desc else "Marine Storm"
+    radius = float(point.get("radius", 12))
+    if wind_speed >= 20.0:
+        radius += 8.0
+    elif wind_speed >= 14.0:
+        radius += 4.0
+
+    return {
+        "id": f"owm-{point['id']}-{int(datetime.utcnow().timestamp() // 1800)}",
+        "name": f"{title} near {point['name']}",
+        "coordinates": [float(point["lon"]), float(point["lat"])],
+        "radius": round(radius, 2),
+    }
+
+
+@app.get("/api/debug/pipeline")
+async def debug_pipeline():
+    """
+    Diagnostic endpoint: identify where the risk pipeline fails.
+    News Fetch → NLP Detection → Alert Storage → Cache → Risk Engine → Heatmap
+    """
+    import os
+    raw_alerts = []
+    try:
+        raw_alerts = await db_client.get_supply_chain_news_last_24h()
+    except Exception as e:
+        raw_alerts = []
+    alerts_after_filter = [a for a in raw_alerts if (a.get("category") or "").lower() in ALLOWED_DISRUPTION_CATEGORIES]
+    cache_size = len(_disruption_cache["alerts"])
+
+    has_newsapi = bool(os.getenv("NEWSAPI_KEY") and os.getenv("NEWSAPI_KEY") not in ("", "your-newsapi-key"))
+    has_mediastack = bool(os.getenv("MEDIASTACK_API_KEY") and os.getenv("MEDIASTACK_API_KEY") not in ("", "your-mediastack-key"))
+    has_gnews = bool(os.getenv("GNEWS_API_KEY") and os.getenv("GNEWS_API_KEY") not in ("", "your-gnews-key"))
+    api_keys_configured = has_newsapi or has_mediastack or has_gnews
+
+    high_risk_count = sum(1 for v in alerts_after_filter if (v.get("risk_score") or 0) >= 4)
+    sample_categories = [a.get("category") for a in raw_alerts[:10]]
+
+    return {
+        "pipeline_step": {
+            "1_news_api_keys": "ok" if api_keys_configured else "FAIL: Set NEWSAPI_KEY, MEDIASTACK_API_KEY, or GNEWS_API_KEY",
+            "2_raw_alerts_in_db": len(raw_alerts),
+            "3_after_category_filter": len(alerts_after_filter),
+            "4_cache_size": cache_size,
+            "5_categories_in_raw": list(set(sample_categories)) if sample_categories else [],
+        },
+        "allowed_categories": list(ALLOWED_DISRUPTION_CATEGORIES),
+        "high_risk_alerts": high_risk_count,
+        "diagnosis": (
+            "No API keys configured – news fetch returns 0 articles"
+            if not api_keys_configured and len(raw_alerts) == 0
+            else "No articles fetched – check API keys and rate limits"
+            if len(raw_alerts) == 0
+            else f"{len(raw_alerts) - len(alerts_after_filter)} alerts filtered out by category"
+            if len(alerts_after_filter) < len(raw_alerts)
+            else "Pipeline OK – check if dashboard uses cached data"
+        ),
+    }
 
 
 @app.get("/api/news/disruptions")
@@ -789,6 +1225,403 @@ async def get_dashboard_data():
         disruption_alerts = _disruption_cache["alerts"]
     political_risks = await _get_dashboard_political_risks(DEFAULT_DASHBOARD_POLITICAL_COUNTRIES)
     return _dashboard_static_response(disruption_alerts, political_risks)
+
+
+MAJOR_CHOKEPOINTS = [
+    "Suez Canal",
+    "Strait of Hormuz",
+    "Strait of Malacca",
+    "Panama Canal",
+    "Bab el-Mandeb",
+]
+
+
+def _chokepoint_mentioned_in_text(text: str) -> List[str]:
+    """Return chokepoint names mentioned in text (case-insensitive)."""
+    if not text:
+        return []
+    t = (text or "").lower()
+    found = []
+    mappings = [
+        ("suez", "Suez Canal"),
+        ("hormuz", "Strait of Hormuz"),
+        ("malacca", "Strait of Malacca"),
+        ("panama canal", "Panama Canal"),
+        ("bab el-mandeb", "Bab el-Mandeb"),
+        ("bab el mandeb", "Bab el-Mandeb"),
+    ]
+    for keyword, name in mappings:
+        if keyword in t and name not in found:
+            found.append(name)
+    return found
+
+
+def _build_chokepoint_status(
+    disruption_alerts: List[Dict[str, Any]],
+    route_reports: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build status for each major chokepoint from disruptions and route data."""
+    chokepoint_alerts: Dict[str, List[str]] = {cp: [] for cp in MAJOR_CHOKEPOINTS}
+    for alert in disruption_alerts or []:
+        title = (alert.get("title") or "") + " " + (alert.get("description") or "")
+        signals = alert.get("risk_signals") or []
+        combined = title + " " + " ".join(s if isinstance(s, str) else "" for s in signals)
+        for cp in _chokepoint_mentioned_in_text(combined):
+            if cp in chokepoint_alerts:
+                chokepoint_alerts[cp].append(alert.get("title") or "Disruption detected")
+
+    result = []
+    for cp in MAJOR_CHOKEPOINTS:
+        mentions = chokepoint_alerts.get(cp, [])
+        routes_passing = 0
+        for r in route_reports or []:
+            route_analysis = r.get("route_analysis")
+            if isinstance(route_analysis, str):
+                try:
+                    route_analysis = json.loads(route_analysis)
+                except Exception:
+                    route_analysis = {}
+            chokepoints = (route_analysis or {}).get("chokepoints") or []
+            if cp in chokepoints:
+                routes_passing += 1
+        status = "elevated" if mentions else ("active" if routes_passing else "clear")
+        result.append({
+            "name": cp,
+            "status": status,
+            "disruption_count": len(mentions),
+            "routes_affected": routes_passing,
+            "latest_alert": mentions[0] if mentions else None,
+        })
+    return result
+
+
+@app.get("/api/shipping-intelligence")
+async def get_shipping_intelligence():
+    """Maritime intelligence control tower: aggregated metrics for shipping operators."""
+    try:
+        disruption_alerts = _get_disruption_alerts_cached()
+        if not disruption_alerts:
+            await _refresh_disruption_cache()
+            disruption_alerts = _disruption_cache["alerts"]
+        political_risks = await _get_dashboard_political_risks(DEFAULT_DASHBOARD_POLITICAL_COUNTRIES)
+        all_reports = await db_client.get_all_reports()
+
+        route_reports = [
+            r for r in all_reports
+            if (r.get("report_type") or "").lower() in ("route", "multi_port_route")
+        ]
+        active_routes = len(route_reports)
+
+        high_risk_routes = 0
+        recent_route_analysis: List[Dict[str, Any]] = []
+        top_risk_routes: List[Dict[str, Any]] = []
+        routes_with_scores: List[tuple[float, Dict[str, Any]]] = []
+
+        for r in route_reports:
+            route_analysis = r.get("route_analysis")
+            if isinstance(route_analysis, str):
+                try:
+                    route_analysis = json.loads(route_analysis)
+                except Exception:
+                    route_analysis = {}
+            if not isinstance(route_analysis, dict):
+                route_analysis = {}
+            score = float(route_analysis.get("final_risk_score") or route_analysis.get("overall_risk_score") or 1)
+            if score >= 4:
+                high_risk_routes += 1
+            route_name = route_analysis.get("route") or " → ".join(route_analysis.get("ports", []))
+            summary = route_analysis.get("summary") or {}
+            routes_with_scores.append((score, {
+                "report_id": r.get("report_id"),
+                "route": route_name,
+                "risk_level": "critical" if score >= 4 else "high" if score >= 3 else "medium" if score >= 2 else "low",
+                "risk_score": round(score, 2),
+                "distance_nm": summary.get("total_distance_nm") or route_analysis.get("total_distance"),
+                "eta_days": summary.get("total_time_days") or route_analysis.get("estimated_time"),
+                "chokepoints": route_analysis.get("chokepoints") or [],
+                "created_at": r.get("created_at"),
+            }))
+
+        routes_with_scores.sort(key=lambda x: x[0], reverse=True)
+        top_risk_routes = [x[1] for x in routes_with_scores[:5]]
+        recent_route_analysis = [x[1] for x in sorted(routes_with_scores, key=lambda x: str(x[1].get("created_at") or ""), reverse=True)[:10]]
+
+        chokepoint_alerts_count = 0
+        for alert in disruption_alerts or []:
+            title = (alert.get("title") or "") + " " + (alert.get("description") or "")
+            signals = alert.get("risk_signals") or []
+            combined = title + " " + " ".join(s if isinstance(s, str) else "" for s in signals)
+            if _chokepoint_mentioned_in_text(combined):
+                chokepoint_alerts_count += 1
+
+        critical_alerts = _build_critical_alerts(disruption_alerts or [], political_risks or [])
+
+        chokepoint_status = _build_chokepoint_status(disruption_alerts, route_reports)
+        world_risk_data = build_world_risk_from_alerts(
+            [a if isinstance(a, dict) else a.dict() for a in (disruption_alerts or [])],
+            [p if isinstance(p, dict) else p.dict() for p in (political_risks or [])],
+        )
+
+        return {
+            "active_routes": active_routes,
+            "high_risk_routes": high_risk_routes,
+            "disruption_alerts": len(disruption_alerts or []),
+            "chokepoint_alerts": chokepoint_alerts_count,
+            "recent_route_analysis": recent_route_analysis,
+            "critical_alerts": critical_alerts[:15],
+            "top_risk_routes": top_risk_routes,
+            "chokepoint_status": chokepoint_status,
+            "world_risk_data": world_risk_data,
+            "political_risks": political_risks or [],
+        }
+    except Exception as e:
+        print(f"Shipping intelligence error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "active_routes": 0,
+            "high_risk_routes": 0,
+            "disruption_alerts": 0,
+            "chokepoint_alerts": 0,
+            "recent_route_analysis": [],
+            "critical_alerts": [],
+            "top_risk_routes": [],
+            "chokepoint_status": [{"name": cp, "status": "unknown", "disruption_count": 0, "routes_affected": 0} for cp in MAJOR_CHOKEPOINTS],
+            "world_risk_data": {},
+            "political_risks": [],
+        }
+
+
+@app.get("/api/weather")
+async def get_marine_weather_events():
+    """
+    Marine weather layer for global shipping map.
+    Primary source: OpenWeather API.
+    Fallback: weather-related disruption intelligence from backend alerts.
+    """
+    api_key = (os.getenv("OPENWEATHER_API_KEY") or "").strip()
+    events: List[Dict[str, Any]] = []
+    provider = "openweather"
+
+    if api_key:
+        timeout = aiohttp.ClientTimeout(total=8)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                tasks = [
+                    _fetch_openweather_point_event(session, point, api_key)
+                    for point in MARITIME_WEATHER_POINTS
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, dict):
+                    events.append(result)
+        except Exception:
+            events = []
+
+    if not events:
+        provider = "disruption-intelligence-fallback"
+        disruptions = _get_disruption_alerts_cached()
+        if not disruptions:
+            await _refresh_disruption_cache()
+            disruptions = _disruption_cache["alerts"]
+        events = _infer_weather_events_from_alerts(disruptions or [])
+
+    return {
+        "events": events[:20],
+        "count": min(len(events), 20),
+        "provider": provider,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/risk-zones")
+async def get_risk_zones():
+    """
+    Dynamic risk zones built from world risk intelligence + critical alerts + political risks.
+    """
+    disruptions = _get_disruption_alerts_cached()
+    if not disruptions:
+        await _refresh_disruption_cache()
+        disruptions = _disruption_cache["alerts"]
+
+    political_risks = await _get_dashboard_political_risks(DEFAULT_DASHBOARD_POLITICAL_COUNTRIES)
+    world_risk_data = build_world_risk_from_alerts(disruptions or [], political_risks or [])
+    critical_alerts = _build_critical_alerts(disruptions or [], political_risks or [])
+
+    zones: List[Dict[str, Any]] = []
+
+    for country, data in (world_risk_data or {}).items():
+        try:
+            risk_level = int(float((data or {}).get("risk_level") or 0))
+        except Exception:
+            risk_level = 0
+        if risk_level < 3:
+            continue
+        coord = _resolve_country_coordinates(country)
+        if not coord:
+            continue
+        zones.append({
+            "coordinates": coord,
+            "risk_level": risk_level,
+            "radius": _risk_radius(risk_level),
+        })
+
+    for alert in critical_alerts:
+        severity = str(alert.get("severity") or "").lower()
+        if severity not in {"critical", "high"}:
+            continue
+        text = " ".join([
+            str(alert.get("message") or ""),
+            str(alert.get("detail") or ""),
+        ])
+        coord = _find_coordinates_in_text(text) or _resolve_country_coordinates(alert.get("detail") or "")
+        if not coord:
+            continue
+        risk_level = 5 if severity == "critical" else 4
+        zones.append({
+            "coordinates": coord,
+            "risk_level": risk_level,
+            "radius": _risk_radius(risk_level) + 2,
+        })
+
+    for risk in political_risks or []:
+        country = get_canonical_country((risk.get("country") or "").strip())
+        score = int(float(risk.get("likelihood_score") or 0))
+        if score < 4:
+            continue
+        coord = _resolve_country_coordinates(country)
+        if not coord:
+            continue
+        zones.append({
+            "coordinates": coord,
+            "risk_level": min(5, score),
+            "radius": _risk_radius(min(5, score)),
+        })
+
+    dedup: Dict[tuple[float, float], Dict[str, Any]] = {}
+    for zone in zones:
+        lon, lat = zone["coordinates"]
+        key = (round(float(lon), 1), round(float(lat), 1))
+        existing = dedup.get(key)
+        if not existing:
+            dedup[key] = zone
+            continue
+        if int(zone["risk_level"]) > int(existing["risk_level"]):
+            dedup[key] = zone
+        elif int(zone["risk_level"]) == int(existing["risk_level"]):
+            existing["radius"] = max(float(existing["radius"]), float(zone["radius"]))
+
+    deduped = sorted(
+        dedup.values(),
+        key=lambda z: (int(z["risk_level"]), float(z["radius"])),
+        reverse=True,
+    )
+    return {
+        "zones": deduped[:80],
+        "count": min(len(deduped), 80),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/ports")
+async def get_ports_intelligence():
+    """
+    Port intelligence layer built from global ports dataset + disruption overlays.
+    """
+    disruptions = _get_disruption_alerts_cached()
+    if not disruptions:
+        await _refresh_disruption_cache()
+        disruptions = _disruption_cache["alerts"]
+
+    disruptions = disruptions or []
+    mention_count_by_port: Dict[str, int] = {}
+    for alert in disruptions:
+        text = " ".join([
+            str(alert.get("title") or ""),
+            str(alert.get("description") or ""),
+            str(alert.get("summary") or ""),
+            str(alert.get("port") or ""),
+        ]).lower()
+        for port_name in MAJOR_PORTS.keys():
+            if port_name.lower() in text:
+                mention_count_by_port[port_name] = mention_count_by_port.get(port_name, 0) + 1
+
+    ports: List[Dict[str, Any]] = []
+    for port_name, info in MAJOR_PORTS.items():
+        coords = info.get("coordinates") or {}
+        lat = coords.get("lat")
+        lon = coords.get("lon")
+        if lat is None or lon is None:
+            continue
+        avg_wait_time = float(info.get("avg_wait_time") or 0.6)
+        disruptions_here = mention_count_by_port.get(port_name, 0)
+        congestion_level = _port_congestion_level(avg_wait_time, disruptions_here)
+        ships_waiting = _estimate_ships_waiting(avg_wait_time, disruptions_here, str(info.get("capacity") or "Medium"))
+
+        ports.append({
+            "port_name": port_name,
+            "coordinates": [float(lon), float(lat)],
+            "congestion_level": congestion_level,
+            "ships_waiting": ships_waiting,
+        })
+
+    severity_order = {"High": 3, "Medium": 2, "Low": 1}
+    ports.sort(
+        key=lambda p: (
+            severity_order.get(str(p.get("congestion_level")), 0),
+            int(p.get("ships_waiting") or 0),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ports": ports,
+        "count": len(ports),
+        "source": "global_ports_dataset",
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/vessels")
+async def get_vessels():
+    """
+    Vessel tracking layer.
+    Uses live AIS API when configured, otherwise falls back to backend AIS sample dataset.
+    """
+    live_vessels = await _fetch_live_vessels()
+    if live_vessels:
+        return {
+            "vessels": live_vessels[:200],
+            "count": min(len(live_vessels), 200),
+            "source": "live_ais",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+    now_hours = datetime.utcnow().timestamp() / 3600.0
+    projected: List[Dict[str, Any]] = []
+    for idx, vessel in enumerate(AIS_SAMPLE_VESSELS):
+        elapsed_hours = (now_hours + (idx * 0.7)) % 2.5
+        lat, lon = project_position(
+            float(vessel["lat"]),
+            float(vessel["lon"]),
+            float(vessel["speed"]),
+            float(vessel["heading"]),
+            elapsed_hours,
+        )
+        projected.append({
+            "vessel_name": vessel["vessel_name"],
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "speed": float(vessel["speed"]),
+            "heading": float(vessel["heading"]),
+        })
+
+    return {
+        "vessels": projected,
+        "count": len(projected),
+        "source": "ais_sample_dataset",
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 # Session Management Endpoints

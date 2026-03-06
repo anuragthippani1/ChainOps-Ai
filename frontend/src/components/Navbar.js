@@ -1,11 +1,13 @@
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import ThemeToggle from "./ThemeToggle";
+import { isDeveloperModeEnabled } from "../utils/developerMode";
 
-import { Brain, MessageSquare, FileText, Users, Bot } from "lucide-react";
+import { Brain, FileText, Users, Bot, Wrench } from "lucide-react";
 
 const Navbar = ({ currentPage, setCurrentPage }) => {
   const location = useLocation();
+  const developerModeEnabled = isDeveloperModeEnabled();
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: Brain, path: "/dashboard" },
@@ -16,12 +18,6 @@ const Navbar = ({ currentPage, setCurrentPage }) => {
       path: "/assistant",
     },
     { id: "reports", label: "Reports", icon: FileText, path: "/reports" },
-    {
-      id: "thinking-logs",
-      label: "Thinking Logs",
-      icon: MessageSquare,
-      path: "/thinking-logs",
-    },
     {
       id: "session-manager",
       label: "Session Manager",
@@ -73,6 +69,18 @@ const Navbar = ({ currentPage, setCurrentPage }) => {
                 );
               })}
             </div>
+
+            {developerModeEnabled && (
+              <Link
+                to="/thinking-logs"
+                onClick={() => setCurrentPage("thinking-logs")}
+                className="inline-flex items-center px-2.5 py-1.5 rounded-md text-xs font-medium border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 transition-colors"
+                title="Developer mode shortcut"
+              >
+                <Wrench className="h-3.5 w-3.5 mr-1.5" />
+                Thinking Logs
+              </Link>
+            )}
 
             {/* Theme Toggle */}
             <ThemeToggle />

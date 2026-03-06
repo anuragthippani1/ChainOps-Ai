@@ -366,7 +366,7 @@ class MongoDBClient:
     
     # Supply chain news (real-time disruption alerts)
     async def store_supply_chain_news(self, alert) -> bool:
-        """Store a supply chain news alert. Uses file fallback if MongoDB unavailable."""
+        """Store a supply chain news alert (disruption alert). Uses file fallback if MongoDB unavailable."""
         try:
             if self.db is not None:
                 doc = alert.dict() if hasattr(alert, "dict") else alert.model_dump()
@@ -382,6 +382,12 @@ class MongoDBClient:
             print(f"Error storing supply chain news: {e}")
             await self._store_news_to_file(alert)
             return True
+
+    async def store_disruption_alert(self, alert) -> bool:
+        """Alias for store_supply_chain_news. Stores disruption alerts from the news pipeline."""
+        doc = alert.dict() if hasattr(alert, "dict") else (alert.model_dump() if hasattr(alert, "model_dump") else dict(alert))
+        print(f"[DEBUG] Stored disruption alert: country={doc.get('country')}, risk_score={doc.get('risk_score')}")
+        return await self.store_supply_chain_news(alert)
 
     async def get_supply_chain_news_last_24h(self) -> List[Dict[str, Any]]:
         """Get supply chain news from last 24 hours."""

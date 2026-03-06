@@ -2,48 +2,40 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDashboard } from "../context/DashboardContext";
 import {
-  TrendingUp,
   Globe,
   AlertTriangle,
   FileText,
   ArrowRight,
-  Shield,
   BarChart3,
   Map,
   Zap,
   Activity,
-  Package,
   Ship,
-  Clock,
-  CheckCircle,
-  TrendingDown,
+  Anchor,
+  Shield,
 } from "lucide-react";
 import IntroAnimation from "./IntroAnimation";
+import GlobalShippingMap from "./GlobalShippingMap";
 
 // Animated Counter Component
 const AnimatedCounter = ({ end, duration = 2000, suffix = "" }) => {
   const [count, setCount] = useState(0);
-
   useEffect(() => {
     let startTime;
     let animationFrame;
-
     const animate = (currentTime) => {
       if (!startTime) startTime = currentTime;
-      const progress = (currentTime - startTime) / duration;
-
+      const progress = Math.min(1, (currentTime - startTime) / duration);
       if (progress < 1) {
-        setCount(Math.floor(end * progress));
+        setCount(Math.floor((typeof end === "number" ? end : 0) * progress));
         animationFrame = requestAnimationFrame(animate);
       } else {
-        setCount(end);
+        setCount(typeof end === "number" ? end : 0);
       }
     };
-
     animationFrame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrame);
   }, [end, duration]);
-
   return (
     <span>
       {count.toLocaleString()}
@@ -52,168 +44,93 @@ const AnimatedCounter = ({ end, duration = 2000, suffix = "" }) => {
   );
 };
 
+const formatRelativeTime = (isoStr) => {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} mins ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return d.toLocaleDateString();
+  } catch {
+    return "";
+  }
+};
+
+const getChokepointStatusColor = (status) => {
+  if (status === "elevated") return "bg-amber-100 text-amber-800 border-amber-300";
+  if (status === "active") return "bg-blue-100 text-blue-800 border-blue-300";
+  return "bg-emerald-100 text-emerald-800 border-emerald-300";
+};
+
+const getRiskBadgeClass = (level) => {
+  if (level === "critical") return "bg-red-100 text-red-800";
+  if (level === "high") return "bg-orange-100 text-orange-800";
+  if (level === "medium") return "bg-yellow-100 text-yellow-800";
+  return "bg-green-100 text-green-800";
+};
+
 const Home = () => {
   const navigate = useNavigate();
-  const { dashboardData, reports } = useDashboard();
+  const { shippingIntelligence, loadShippingIntelligence } = useDashboard();
 
-  // Always show intro when landing on home page
   const [showIntro, setShowIntro] = useState(true);
+  const handleIntroComplete = () => setShowIntro(false);
 
-  // Live Activity Feed - MUST be defined before any conditional returns
-  const [activities] = useState([
-    {
-      type: "success",
-      icon: CheckCircle,
-      message: "Shipment #SX-1234 delivered to Dubai",
-      time: "2 mins ago",
-    },
-    {
-      type: "info",
-      icon: Ship,
-      message: "Route optimized for cargo #SX-5678",
-      time: "5 mins ago",
-    },
-    {
-      type: "warning",
-      icon: AlertTriangle,
-      message: "Weather delay detected in Pacific route",
-      time: "8 mins ago",
-    },
-    {
-      type: "success",
-      icon: CheckCircle,
-      message: "Customs clearance completed - Port of Singapore",
-      time: "12 mins ago",
-    },
-  ]);
-
-  const handleIntroComplete = () => {
-    setShowIntro(false);
-  };
-
-  // Show intro animation only on page refresh
   if (showIntro) {
     return <IntroAnimation onComplete={handleIntroComplete} />;
   }
 
-  // Calculate statistics
-  const totalCountries = Object.keys(dashboardData.worldRiskData || {}).length;
-  const highRiskCountries = Object.values(
-    dashboardData.worldRiskData || {}
-  ).filter((data) => data.risk_level >= 3).length;
-  const totalReports = reports.length;
-  const criticalAlerts = Object.values(
-    dashboardData.worldRiskData || {}
-  ).filter((data) => data.risk_level === 4).length;
+  const {
+    active_routes = 0,
+    high_risk_routes = 0,
+    disruption_alerts = 0,
+    chokepoint_alerts = 0,
+    recent_route_analysis = [],
+    critical_alerts = [],
+    chokepoint_status = [],
+    world_risk_data = {},
+    loading: intelLoading,
+    error: intelError,
+  } = shippingIntelligence;
 
-  const stats = [
-    {
-      label: "Countries Monitored",
-      value: totalCountries,
-      icon: Globe,
-    },
-    {
-      label: "High Risk Countries",
-      value: highRiskCountries,
-      icon: AlertTriangle,
-    },
-    {
-      label: "Reports Generated",
-      value: totalReports,
-      icon: FileText,
-    },
-    {
-      label: "Critical Alerts",
-      value: criticalAlerts,
-      icon: Shield,
-    },
+  const shippingMetrics = [
+    { label: "Active Shipping Routes", value: active_routes, icon: Ship, color: "blue" },
+    { label: "High Risk Routes", value: high_risk_routes, icon: AlertTriangle, color: "amber" },
+    { label: "Disruption Alerts", value: disruption_alerts, icon: Shield, color: "red" },
+    { label: "Chokepoint Alerts", value: chokepoint_alerts, icon: Anchor, color: "purple" },
   ];
 
   const quickActions = [
     {
-      title: "Live Dashboard",
-      description: "Real-time shipment tracking and analytics",
+      title: "Control Center",
+      description: "Global risk heatmap, disruptions, and political risks",
       icon: BarChart3,
       path: "/dashboard",
     },
     {
       title: "AI Assistant",
-      description: "Smart route optimization and recommendations",
+      description: "Route analysis, chokepoint detection, logistics advice",
       icon: Zap,
       path: "/assistant",
     },
     {
-      title: "Shipping Reports",
-      description: "Detailed route analysis and performance reports",
+      title: "Reports",
+      description: "Download PDF logistics intelligence reports",
       icon: FileText,
       path: "/reports",
     },
     {
       title: "Route Planner",
-      description: "Interactive global shipping route visualization",
+      description: "Multi-port route planning and risk analysis",
       icon: Map,
-      path: "/dashboard",
-    },
-  ];
-
-  const features = [
-    {
-      title: "Real-Time Tracking",
-      description:
-        "Monitor shipments across 100+ countries with live location updates and ETAs.",
-      icon: Globe,
-    },
-    {
-      title: "Smart Automation",
-      description:
-        "AI-powered route optimization, automated alerts, and intelligent scheduling.",
-      icon: TrendingUp,
-    },
-    {
-      title: "Instant Updates",
-      description:
-        "Get real-time notifications for delays, route changes, and delivery milestones.",
-      icon: FileText,
-    },
-    {
-      title: "Simplified Process",
-      description:
-        "Streamlined workflows with intuitive dashboards and one-click actions.",
-      icon: BarChart3,
-    },
-  ];
-
-  // Key Metrics Data
-  const keyMetrics = [
-    {
-      label: "Active Shipments",
-      value: 1247,
-      trend: "+12%",
-      icon: Package,
-      color: "blue",
-    },
-    {
-      label: "Routes Optimized",
-      value: 89,
-      trend: "+23%",
-      icon: Ship,
-      color: "green",
-    },
-    {
-      label: "Avg Delivery Time",
-      value: 12.3,
-      suffix: " days",
-      trend: "-8%",
-      icon: Clock,
-      color: "purple",
-    },
-    {
-      label: "On-Time Delivery",
-      value: 98.7,
-      suffix: "%",
-      trend: "+2%",
-      icon: CheckCircle,
-      color: "emerald",
+      path: "/route-planner",
     },
   ];
 
@@ -239,33 +156,31 @@ const Home = () => {
                 <div className="flex items-center space-x-2 bg-white/10 backdrop-blur-sm px-6 py-3 rounded-full border border-white/20">
                   <Activity className="h-5 w-5 animate-pulse text-white" />
                   <span className="text-sm font-semibold text-white">
-                    Live Tracking • Real-Time Updates
+                    Maritime Intelligence • Refreshed every 60s
                   </span>
                 </div>
               </div>
 
               <h1 className="text-5xl md:text-7xl font-extrabold mb-6 text-white drop-shadow-2xl leading-tight">
-                Welcome to ChainOps AI
+                Maritime Intelligence Control Tower
               </h1>
 
               <p className="text-2xl md:text-3xl font-semibold text-gray-100 mb-6 drop-shadow-lg">
-                AI-Powered Supply Chain Intelligence
+                AI-Powered Shipping Risk & Route Intelligence
               </p>
 
               <p className="text-base md:text-lg text-gray-200 max-w-3xl mx-auto leading-relaxed mb-4">
-                <strong className="text-white">ChainOps AI</strong> is your
-                intelligent shipping risk management platform that monitors
-                <strong className="text-white"> political risks</strong>,{" "}
-                <strong className="text-white">supply chain disruptions</strong>
-                , and
-                <strong className="text-white"> schedule delays</strong> across
-                100+ countries in real-time.
+                <strong className="text-white">ChainOps AI</strong> aggregates
+                political risks, supply chain disruptions, chokepoint status, and
+                route analyses so <strong className="text-white">ship captains</strong>,{" "}
+                <strong className="text-white">shipping operators</strong>, and{" "}
+                <strong className="text-white">cargo logistics managers</strong> can
+                make fast decisions without manually checking multiple systems.
               </p>
 
               <p className="text-sm md:text-base text-gray-300 max-w-3xl mx-auto leading-relaxed mb-8">
-                Get AI-powered route analysis, automated risk reports, and
-                instant alerts to make smarter logistics decisions and avoid
-                costly delays before they happen.
+                Monitor global shipping risks, get route intelligence, and receive
+                critical alerts in one place.
               </p>
 
               {/* CTA Buttons */}
@@ -347,25 +262,55 @@ const Home = () => {
         </div>
       </div>
 
-      {/* Stats Section with Animated Counters */}
+      {/* Section 1 — Global Shipping Metrics */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Global Shipping Metrics
+          </h2>
+          <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+            <Activity className="h-4 w-4 mr-1 animate-pulse" />
+            <span>{intelLoading ? "Loading…" : "Live"}</span>
+          </div>
+        </div>
+        {intelError && (
+          <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg text-amber-800 dark:text-amber-200 text-sm">
+            {intelError}
+            <button
+              onClick={() => loadShippingIntelligence()}
+              className="ml-2 underline font-medium"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {stats.map((stat, index) => (
+          {shippingMetrics.map((metric, index) => (
             <div
               key={index}
-              className="group bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md p-6 transform transition-all duration-200 hover:scale-105 cursor-pointer"
+              className="group bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm hover:shadow-md p-6 transform transition-all duration-200 hover:scale-105"
             >
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    {stat.label}
+                    {metric.label}
                   </p>
                   <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
-                    <AnimatedCounter end={stat.value} duration={1500} />
+                    <AnimatedCounter end={metric.value} duration={1500} />
                   </p>
                 </div>
-                <div className="bg-gray-100 dark:bg-gray-700 p-3 rounded-lg">
-                  <stat.icon className="h-6 w-6 text-gray-600 dark:text-gray-300" />
+                <div className={`p-3 rounded-lg ${
+                  metric.color === "blue" ? "bg-blue-100 dark:bg-blue-900/30" :
+                  metric.color === "amber" ? "bg-amber-100 dark:bg-amber-900/30" :
+                  metric.color === "red" ? "bg-red-100 dark:bg-red-900/30" :
+                  "bg-purple-100 dark:bg-purple-900/30"
+                }`}>
+                  <metric.icon className={`h-6 w-6 ${
+                    metric.color === "blue" ? "text-blue-600 dark:text-blue-400" :
+                    metric.color === "amber" ? "text-amber-600 dark:text-amber-400" :
+                    metric.color === "red" ? "text-red-600 dark:text-red-400" :
+                    "text-purple-600 dark:text-purple-400"
+                  }`} />
                 </div>
               </div>
             </div>
@@ -373,121 +318,151 @@ const Home = () => {
         </div>
       </div>
 
-      {/* Key Metrics & Live Activity Section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Key Metrics Dashboard */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                Key Metrics
-              </h3>
-              <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-                <Activity className="h-4 w-4 mr-1 animate-pulse" />
-                <span>Live</span>
-              </div>
-            </div>
-            <div className="space-y-4">
-              {keyMetrics.map((metric, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <div className="flex items-center space-x-3">
-                    <div
-                      className={`p-2 bg-${metric.color}-100 dark:bg-${metric.color}-900/30 rounded-lg`}
-                    >
-                      <metric.icon
-                        className={`h-5 w-5 text-${metric.color}-600 dark:text-${metric.color}-400`}
-                      />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                        {metric.label}
-                      </p>
-                      <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                        <AnimatedCounter
-                          end={metric.value}
-                          duration={2000}
-                          suffix={metric.suffix || ""}
-                        />
-                      </p>
-                    </div>
-                  </div>
-                  <div
-                    className={`flex items-center space-x-1 text-sm font-semibold ${
-                      metric.trend.startsWith("+")
-                        ? "text-green-600 dark:text-green-400"
-                        : "text-red-600 dark:text-red-400"
-                    }`}
-                  >
-                    {metric.trend.startsWith("+") ? (
-                      <TrendingUp className="h-4 w-4" />
-                    ) : (
-                      <TrendingDown className="h-4 w-4" />
-                    )}
-                    <span>{metric.trend}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+      {/* Section 2 — Global Maritime Intelligence Snapshot */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+          Global Maritime Intelligence Snapshot
+        </h2>
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+          <div className="p-4 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-600">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Routes: {active_routes} • Disruptions: {disruption_alerts} • Chokepoints: {chokepoint_alerts} • Elevated countries: {Object.values(world_risk_data).filter((d) => d.risk_level >= 3).length}
+            </p>
           </div>
+          <div className="p-6 min-h-[280px]">
+            <GlobalShippingMap intelligenceData={shippingIntelligence} />
+          </div>
+        </div>
+      </div>
 
-          {/* Live Activity Feed */}
+      {/* Section 3 — Critical Shipping Alerts & Section 4 — Recent Route Intelligence */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Critical Shipping Alerts */}
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold text-gray-900 dark:text-white">
-                Live Activity
+                Critical Shipping Alerts
               </h3>
-              <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-                <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse mr-2"></div>
-                <span>Real-time</span>
-              </div>
+              <Shield className="h-5 w-5 text-amber-500" />
             </div>
-            <div className="space-y-3">
-              {activities.map((activity, index) => (
-                <div
-                  key={index}
-                  className="flex items-start space-x-3 p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors animate-fadeIn"
-                  style={{ animationDelay: `${index * 100}ms` }}
-                >
+            <div className="space-y-3 max-h-[320px] overflow-y-auto">
+              {critical_alerts.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 py-4">
+                  No critical alerts. Monitor continues.
+                </p>
+              ) : (
+                critical_alerts.slice(0, 8).map((alert, idx) => (
                   <div
-                    className={`p-2 rounded-lg ${
-                      activity.type === "success"
-                        ? "bg-green-100 dark:bg-green-900/30"
-                        : activity.type === "warning"
-                        ? "bg-yellow-100 dark:bg-yellow-900/30"
-                        : "bg-blue-100 dark:bg-blue-900/30"
-                    }`}
+                    key={idx}
+                    className="flex items-start space-x-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50"
                   >
-                    <activity.icon
-                      className={`h-4 w-4 ${
-                        activity.type === "success"
-                          ? "text-green-600 dark:text-green-400"
-                          : activity.type === "warning"
-                          ? "text-yellow-600 dark:text-yellow-400"
-                          : "text-blue-600 dark:text-blue-400"
-                      }`}
-                    />
+                    <div className={`p-1.5 rounded ${
+                      alert.severity === "critical" ? "bg-red-100 dark:bg-red-900/30" :
+                      alert.severity === "high" ? "bg-amber-100 dark:bg-amber-900/30" :
+                      "bg-blue-100 dark:bg-blue-900/30"
+                    }`}>
+                      <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        {alert.message}
+                        {alert.detail && <span className="text-gray-500 dark:text-gray-400"> — {alert.detail}</span>}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        {formatRelativeTime(alert.timestamp)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-gray-900 dark:text-white font-medium">
-                      {activity.message}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      {activity.time}
-                    </p>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
             <button
               onClick={() => navigate("/dashboard")}
-              className="mt-4 w-full text-center text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white font-medium transition-colors"
+              className="mt-4 w-full text-center text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white font-medium"
             >
-              View all activity →
+              View full dashboard →
             </button>
           </div>
+
+          {/* Recent Route Intelligence */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+                Recent Route Intelligence
+              </h3>
+              <Ship className="h-5 w-5 text-blue-500" />
+            </div>
+            <div className="space-y-3 max-h-[320px] overflow-y-auto">
+              {recent_route_analysis.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 py-4">
+                  No route analyses yet. Use AI Assistant or Route Planner to analyze routes.
+                </p>
+              ) : (
+                recent_route_analysis.slice(0, 6).map((r, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-start justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                        {r.route || "Route"}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        {r.distance_nm != null && `${r.distance_nm} nm`}
+                        {r.eta_days != null && ` • ${r.eta_days} days ETA`}
+                        {r.chokepoints?.length > 0 && ` • ${r.chokepoints.join(", ")}`}
+                      </p>
+                    </div>
+                    <span className={`shrink-0 px-2 py-0.5 text-xs font-medium rounded ${getRiskBadgeClass(r.risk_level || "low")}`}>
+                      {r.risk_level || "low"}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+            <button
+              onClick={() => navigate("/route-planner")}
+              className="mt-4 w-full text-center text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white font-medium"
+            >
+              Plan new route →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Section 5 — Chokepoint Monitor */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+          Chokepoint Monitor
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {(chokepoint_status.length > 0 ? chokepoint_status : [
+            { name: "Suez Canal", status: "unknown", disruption_count: 0, routes_affected: 0 },
+            { name: "Strait of Hormuz", status: "unknown", disruption_count: 0, routes_affected: 0 },
+            { name: "Strait of Malacca", status: "unknown", disruption_count: 0, routes_affected: 0 },
+            { name: "Panama Canal", status: "unknown", disruption_count: 0, routes_affected: 0 },
+            { name: "Bab el-Mandeb", status: "unknown", disruption_count: 0, routes_affected: 0 },
+          ]).map((cp, idx) => (
+            <div
+              key={idx}
+              className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <Anchor className="h-5 w-5 text-gray-500 dark:text-gray-400" />
+                <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getChokepointStatusColor(cp.status)}`}>
+                  {cp.status}
+                </span>
+              </div>
+              <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                {cp.name}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                {cp.disruption_count > 0 ? `${cp.disruption_count} disruption(s)` : "No disruptions"}
+                {cp.routes_affected > 0 && ` • ${cp.routes_affected} route(s)`}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -495,10 +470,10 @@ const Home = () => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 relative bg-white dark:bg-gray-900">
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-4">
-            Quick Access
+            Operator Tools
           </h2>
           <p className="text-gray-600 dark:text-gray-400 text-lg">
-            Jump into action with our streamlined tools
+            Control center, AI assistant, reports, and route planner
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -530,29 +505,41 @@ const Home = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-4">
-              Why Choose ChainOps AI?
+              Maritime Intelligence Platform
             </h2>
             <p className="text-gray-600 dark:text-gray-400 text-lg">
-              Modern shipping solutions that save time and reduce complexity
+              Built for ship captains, shipping operators, and cargo logistics managers
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-            {features.map((feature, index) => (
-              <div
-                key={index}
-                className="group text-center transform transition-all duration-200 hover:scale-105"
-              >
-                <div className="bg-white dark:bg-gray-700 w-16 h-16 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-gray-200 dark:border-gray-600 group-hover:shadow-md transition-all">
-                  <feature.icon className="h-8 w-8 text-gray-700 dark:text-gray-300" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                  {feature.title}
-                </h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                  {feature.description}
-                </p>
+            <div className="group text-center transform transition-all duration-200 hover:scale-105">
+              <div className="bg-white dark:bg-gray-700 w-16 h-16 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-gray-200 dark:border-gray-600">
+                <Globe className="h-8 w-8 text-gray-700 dark:text-gray-300" />
               </div>
-            ))}
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Global Risk Monitoring</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Political risks, disruptions, and chokepoint status across 190+ countries</p>
+            </div>
+            <div className="group text-center transform transition-all duration-200 hover:scale-105">
+              <div className="bg-white dark:bg-gray-700 w-16 h-16 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-gray-200 dark:border-gray-600">
+                <Ship className="h-8 w-8 text-gray-700 dark:text-gray-300" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Route Intelligence</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Distance, ETA, chokepoints, costs, and risk scores for maritime routes</p>
+            </div>
+            <div className="group text-center transform transition-all duration-200 hover:scale-105">
+              <div className="bg-white dark:bg-gray-700 w-16 h-16 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-gray-200 dark:border-gray-600">
+                <AlertTriangle className="h-8 w-8 text-gray-700 dark:text-gray-300" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Critical Alerts</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Real-time disruption and political alerts affecting shipping corridors</p>
+            </div>
+            <div className="group text-center transform transition-all duration-200 hover:scale-105">
+              <div className="bg-white dark:bg-gray-700 w-16 h-16 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-gray-200 dark:border-gray-600">
+                <FileText className="h-8 w-8 text-gray-700 dark:text-gray-300" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">PDF Reports</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Download logistics intelligence and route analysis reports</p>
+            </div>
           </div>
         </div>
       </div>
@@ -566,10 +553,10 @@ const Home = () => {
               <span className="text-sm font-semibold">Get Started Now</span>
             </div>
             <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Ready to Streamline Your Shipping?
+              Ready to Monitor Global Shipping Risks?
             </h2>
             <p className="text-lg text-gray-300 mb-8 max-w-2xl mx-auto">
-              Experience real-time tracking and intelligent automation today
+              Access the control center and AI assistant for maritime intelligence
             </p>
             <div className="flex flex-col sm:flex-row justify-center gap-4">
               <button
@@ -602,8 +589,7 @@ const Home = () => {
               </span>
             </div>
             <p className="text-gray-600 dark:text-gray-400 mb-2">
-              © 2025 ChainOps AI. Modern Shipping Platform for Real-Time
-              Updates.
+              © 2025 ChainOps AI. Maritime Intelligence Control Tower for Shipping Operators.
             </p>
             <p className="text-gray-500 dark:text-gray-500 text-sm flex items-center justify-center space-x-4">
               <span className="flex items-center">

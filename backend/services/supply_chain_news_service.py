@@ -10,21 +10,26 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import aiohttp
 
-# Logistics and shipment related search queries only (no generic terms)
+# Broader logistics + geopolitical search surface to avoid zero-result runs.
 SEARCH_QUERIES = [
-    "port congestion",
-    "shipping delay",
-    "container shortage",
-    "freight disruption",
-    "cargo delay",
+    "shipping",
+    "global shipping",
+    "supply chain disruption",
+    "trade disruption",
     "port strike",
-    "shipping strike",
-    "shipping route disruption",
+    "port congestion",
+    "maritime security",
+    "naval tension",
+    "trade war",
+    "container shipping",
+    "logistics delays",
     "canal blockage",
-    "maritime disruption",
-    "logistics disruption",
-    "cargo vessel delay",
-    "shipping backlog",
+    "red sea conflict",
+    "suez canal blockage",
+    "strait of hormuz tension",
+    "typhoon shipping",
+    "hurricane port",
+    "storm shipping delay",
 ]
 
 # Strict filter: must contain at least one of these to be stored
@@ -56,11 +61,21 @@ LOGISTICS_KEYWORDS = [
     "hormuz strait",
     "malacca strait",
     "strait of malacca",
+    "bab el-mandeb",
     "logistics",
     "canal",
     "harbor",
     "terminal",
     "customs delay",
+    "attack",
+    "missile",
+    "blockade",
+    "typhoon",
+    "hurricane",
+    "cyclone",
+    "storm",
+    "port strike",
+    "port shutdown",
 ]
 
 # Reject articles with these (without logistics context)
@@ -228,10 +243,13 @@ class SupplyChainNewsService:
         all_articles = []
         seen_urls = set()
 
-        for query in SEARCH_QUERIES[:3]:  # Limit to avoid rate limits
+        for query in SEARCH_QUERIES:
+            print(f"[DEBUG] fetch_all_news: query='{query}'")
+            before_query_total = len(all_articles)
             # Try cache first
             cache_key_na = self._cache_key("newsapi", query)
             cache_key_ms = self._cache_key("mediastack", query)
+            cache_key_gn = self._cache_key("gnews", query)
 
             newsapi_results = self._get_cached(cache_key_na)
             if newsapi_results is None:
@@ -271,10 +289,10 @@ class SupplyChainNewsService:
                         "raw": a,
                     })
 
-            gnews_results = self._get_cached(self._cache_key("gnews", query))
+            gnews_results = self._get_cached(cache_key_gn)
             if gnews_results is None:
                 gnews_results = await self._fetch_gnews(query)
-                self._set_cached(self._cache_key("gnews", query), gnews_results)
+                self._set_cached(cache_key_gn, gnews_results)
 
             for a in gnews_results:
                 url = a.get("url", "")
@@ -290,23 +308,32 @@ class SupplyChainNewsService:
                         "raw": a,
                     })
 
+            query_added = len(all_articles) - before_query_total
+            print(
+                f"[DEBUG] fetch_all_news: query='{query}', "
+                f"newsapi={len(newsapi_results)}, mediastack={len(mediastack_results)}, "
+                f"gnews={len(gnews_results)}, unique_added={query_added}"
+            )
             await asyncio.sleep(1)  # Rate limit between queries
 
         self._last_fetch_ts = datetime.utcnow().timestamp()
+        print(f"[DEBUG] fetch_all_news: total unique articles fetched={len(all_articles)}")
         return all_articles
 
     async def run_fetch_and_store(self) -> int:
         """Fetch news, process with NLP, store in MongoDB. Returns count stored."""
         if not self._should_fetch() and self.db_client:
-            # Still return count from DB for last 24h
+            print("[DEBUG] run_fetch_and_store: skipping fetch (_should_fetch=False), returning DB count")
             try:
                 alerts = await self.db_client.get_supply_chain_news_last_24h()
+                print(f"[DEBUG] run_fetch_and_store: returning early, DB has {len(alerts)} alerts in last 24h")
                 return len(alerts)
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"[DEBUG] run_fetch_and_store: DB count failed: {ex}")
             return 0
 
         articles = await self.fetch_all_news()
+        print(f"[DEBUG] run_fetch_and_store: articles fetched={len(articles)}")
         if not articles:
             return 0
 
@@ -318,9 +345,12 @@ class SupplyChainNewsService:
             try:
                 processed = await processor.process_article(art)
                 if processed and self.db_client:
-                    await self.db_client.store_supply_chain_news(processed)
+                    await self.db_client.store_disruption_alert(processed)
                     stored += 1
+                elif processed and not self.db_client:
+                    print("[DEBUG] run_fetch_and_store: no db_client, skipping store")
             except Exception as e:
                 print(f"Error processing article: {e}")
 
+        print(f"[DEBUG] run_fetch_and_store: stored {stored} disruption alerts")
         return stored

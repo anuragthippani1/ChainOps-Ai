@@ -301,21 +301,18 @@ class PoliticalRiskAgent:
         risks = []
         
         for article in articles:
-            # Extract text content
-            content = ""
-            if "content" in article:
-                content = article["content"]
-            elif "description" in article:
-                content = article["description"]
-            elif "title" in article:
-                content = article["title"]
+            # Use reasoning + source-like context (title/description/content) for scoring.
+            title = article.get("title", "")
+            description = article.get("description", "")
+            content = article.get("content", "")
+            combined_text = f"{title} {description} {content}".strip()
             
             # Check for risk keywords
-            risk_score = self._calculate_risk_score(content)
+            risk_score = self._calculate_risk_score(combined_text)
             
             if risk_score > 0:
-                risk_type = self._identify_risk_type(content)
-                reasoning = self._generate_reasoning(content, risk_type)
+                risk_type = self._identify_risk_type(combined_text)
+                reasoning = self._generate_reasoning(combined_text, risk_type)
                 
                 risk = PoliticalRisk(
                     country=country,
@@ -331,36 +328,63 @@ class PoliticalRiskAgent:
         return risks
     
     def _calculate_risk_score(self, content: str) -> int:
-        """Calculate risk score based on content analysis"""
-        content_lower = content.lower()
-        score = 0
-        
-        # Check for high-risk keywords
-        high_risk_keywords = ["strike", "protest", "conflict", "war", "embargo", "sanctions"]
-        for keyword in high_risk_keywords:
-            if keyword in content_lower:
-                score += 3
-        
-        # Check for medium-risk keywords
-        medium_risk_keywords = ["tariff", "policy change", "regulation", "delay", "disruption"]
-        for keyword in medium_risk_keywords:
-            if keyword in content_lower:
-                score += 2
-        
-        # Check for low-risk keywords
-        low_risk_keywords = ["trade", "economic", "business", "manufacturing"]
-        for keyword in low_risk_keywords:
-            if keyword in content_lower:
-                score += 1
-        
-        # Cap at 5
-        return min(score, 5)
+        """Calculate geopolitical/logistics risk score (1-5) from article text."""
+        content_lower = (content or "").lower()
+        score = 1
+
+        critical_keywords = [
+            "war",
+            "armed conflict",
+            "military tension",
+            "maritime attack",
+            "missile",
+            "blockade",
+            "sanctions",
+            "trade sanctions",
+        ]
+        high_keywords = [
+            "conflict",
+            "military",
+            "naval",
+            "shipping disruption",
+            "chokepoint",
+            "strait of hormuz",
+            "bab el-mandeb",
+            "suez canal",
+            "port shutdown",
+        ]
+        medium_keywords = [
+            "strike",
+            "protest",
+            "tariff",
+            "policy change",
+            "regulation",
+            "delay",
+            "disruption",
+            "instability",
+        ]
+        low_keywords = ["trade", "economic", "business", "manufacturing"]
+
+        if any(keyword in content_lower for keyword in critical_keywords):
+            score = max(score, 4)
+            if any(keyword in content_lower for keyword in ["war", "missile", "maritime attack", "blockade"]):
+                score = max(score, 5)
+        if any(keyword in content_lower for keyword in high_keywords):
+            score = max(score, 3)
+        if any(keyword in content_lower for keyword in medium_keywords):
+            score = max(score, 2)
+        if any(keyword in content_lower for keyword in low_keywords):
+            score = max(score, 1)
+
+        return min(max(score, 1), 5)
     
     def _identify_risk_type(self, content: str) -> str:
         """Identify the type of political risk"""
         content_lower = content.lower()
         
-        if any(word in content_lower for word in ["strike", "protest", "unrest"]):
+        if any(word in content_lower for word in ["maritime", "shipping", "naval", "chokepoint", "hormuz", "suez", "bab el-mandeb"]):
+            return "Maritime Security"
+        elif any(word in content_lower for word in ["strike", "protest", "unrest"]):
             return "Labor Disputes"
         elif any(word in content_lower for word in ["tariff", "trade", "export", "import"]):
             return "Trade Policy"
