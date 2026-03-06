@@ -2,229 +2,164 @@
   <img src="frontend/public/logo.png" alt="ChainOps AI Logo" width="200"/>
 </div>
 
-# ChainOps AI - Multi-Agent Supply Chain Risk Intelligence Platform
+# ChainOps AI
 
-ChainOps AI is a proof-of-concept Agentic AI application for real-time supply chain risk intelligence, built using only free agents and APIs. It helps expeditors monitor and assess supply chain risks across multiple domains in near real time.
+**AI-Powered Maritime Intelligence Control Tower**
 
-## 🌍 Core Features
+ChainOps AI aggregates political risks, supply chain disruptions, chokepoint status, and route analyses so **ship captains**, **shipping operators**, and **cargo logistics managers** can make fast decisions without manually checking multiple systems. Monitor global shipping risks, get route intelligence, and receive critical alerts in one place.
 
-- **Real-time Risk Monitoring**: Track political, schedule, and logistics risks
-- **Multi-Agent Architecture**: 4 specialized AI agents working together
-- **Interactive Dashboard**: World map visualization with risk heatmaps
-- **Natural Language Queries**: Chat with AI assistant for risk analysis
-- **Comprehensive Reports**: Generate and download detailed risk assessments
-- **Free APIs**: Uses only free-tier services (no credit card required)
+---
 
-## 🤖 Multi-Agent System
+## Core Features
 
-### 1. Assistant Agent
+- **Global Maritime Intelligence Snapshot** – Interactive ECDIS-style world map with layers:
+  - **Weather** – Marine weather events (OpenWeather or disruption-based fallback)
+  - **Risk Zones** – Dynamic zones from political risks, disruptions, and critical alerts
+  - **Port Intelligence** – Global ports with congestion levels and ships waiting
+  - **Vessel Tracking** – AIS sample data or live feed (when configured)
+  - **Disruptions** – Critical alerts mapped by location
+  - **Risk Snapshot** – Country-level risk markers
+- **Strategic Chokepoints** – Suez Canal, Strait of Hormuz, Bab el-Mandeb, Strait of Malacca, Panama Canal, Taiwan Strait, Gibraltar, English Channel, Bosphorus, Sunda Strait, Lombok Strait
+- **AI Assistant** – Natural language queries for route analysis and risk intelligence
+- **Multi-Port Route Planner** – Plan routes with risk assessment and optimization
+- **Dashboard** – World risk heatmap, political risk analysis, disruption alerts
+- **Reports** – Generate and download PDF risk reports
+- **Session Manager** – Organize sessions and reports
 
-- Handles greetings, help, and general queries
-- Uses OpenAI GPT for natural language processing
-- Routes queries to appropriate specialized agents
+---
 
-### 2. Scheduler Agent
+## Tech Stack
 
-- Analyzes equipment schedule data
-- Identifies delivery delays and risk levels (1-5)
-- Returns structured JSON with schedule risks
+| Layer      | Technology                          |
+|-----------|--------------------------------------|
+| Frontend  | React, Tailwind CSS, react-simple-maps |
+| Backend   | FastAPI (Python)                     |
+| Database  | MongoDB (Atlas or local)             |
+| News APIs | NewsAPI, Mediastack, GNews           |
+| Weather   | OpenWeather (marine weather)         |
+| Reporting | python-docx, reportlab               |
 
-### 3. Political Risk Agent
+---
 
-- Uses NewsData.io and GNews (free APIs) for news analysis
-- Analyzes political/geopolitical events by country
-- Assigns likelihood scores based on recentness and severity
-- Provides citations and source links
-
-### 4. Reporting Agent
-
-- Combines outputs from other agents
-- Generates comprehensive risk reports
-- Creates downloadable PDF/DOCX reports
-- Formats data for visualization
-
-## 🛠 Tech Stack
-
-- **Frontend**: React + Tailwind CSS
-- **Backend**: FastAPI (Python)
-- **Database**: MongoDB (Community Edition or Atlas Free Tier)
-- **Charts & Maps**: react-simple-maps, recharts
-- **News APIs**: NewsData.io, GNews (free tiers)
-- **LLM**: OpenAI free tier
-- **Reporting**: python-docx, reportlab
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 16+ and npm
-- Python 3.8+
+- Node.js 16+ and npm  
+- Python 3.8+  
 - MongoDB (local or Atlas free tier)
 
 ### Installation
 
-1. **Clone and install dependencies:**
-
 ```bash
-git clone <repository-url>
-cd ChainOps-AI
+git clone https://github.com/anuragthippani1/ChainOps-Ai.git
+cd ChainOps-Ai
 npm run install-all
 ```
 
-2. **Set up environment variables:**
+### Environment Variables
+
+Copy the example env and add your keys:
 
 ```bash
 cd backend
 cp env.example .env
-# Edit .env with your API keys (optional for demo)
 ```
 
-3. **Start the application:**
+Add to `backend/.env`:
+
+```env
+# News (supply chain disruptions, political risk)
+NEWSAPI_KEY=
+MEDIASTACK_API_KEY=
+GNEWS_API_KEY=
+NEWSDATA_API_KEY=
+
+# Marine weather (optional; falls back to disruption-based events)
+OPENWEATHER_API_KEY=
+
+# MongoDB (optional; uses file fallback)
+MONGODB_URI=mongodb://localhost:27017/chainops_ai
+
+# OpenAI (optional; for AI summaries)
+OPENAI_API_KEY=
+```
+
+For the frontend (production), set `REACT_APP_API_URL` to your backend URL.
+
+### Run Locally
 
 ```bash
 npm run dev
 ```
 
-This will start both the backend (port 8000) and frontend (port 3000).
+- **Frontend:** http://localhost:3000  
+- **Backend:** http://127.0.0.1:8000  
 
-### API Keys (Optional)
+---
 
-The application works with sample data by default. For live data, add these to `backend/.env`:
+## Backend APIs
 
-```env
-# OpenAI API Key (for enhanced responses)
-OPENAI_API_KEY=your-openai-key
+| Endpoint                   | Description                                |
+|---------------------------|--------------------------------------------|
+| `/api/shipping-intelligence` | Maritime metrics, chokepoints, alerts   |
+| `/api/dashboard`          | World risk data, political risks           |
+| `/api/weather`            | Marine weather events                      |
+| `/api/risk-zones`         | Dynamic risk zones from intelligence       |
+| `/api/ports`              | Port intelligence (congestion, ships)      |
+| `/api/vessels`            | Vessel positions (AIS sample or live)      |
+| `/api/query`              | AI assistant queries                       |
+| `/api/route/plan-multi-port` | Multi-port route planning               |
+| `/api/reports`            | Generated reports                          |
 
-# News API Keys (for live political risk data)
-NEWSDATA_API_KEY=your-newsdata-key
-GNEWS_API_KEY=your-gnews-key
+---
 
-# Real-time supply chain news (NewsAPI, Mediastack - fetch every 10 min)
-NEWSAPI_KEY=your-newsapi-key
-MEDIASTACK_API_KEY=your-mediastack-key
+## Deployment
 
-# MongoDB (optional, uses file fallback)
-MONGODB_URI=mongodb://localhost:27017/chainops_ai
+### Backend (Render – Web Service)
+
+- **Root Directory:** `backend`  
+- **Build Command:** `pip install -r requirements.txt`  
+- **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`  
+- Add env vars in Render (MongoDB, API keys, etc.)
+
+### Frontend (Render Static Site or Vercel)
+
+- **Root Directory:** `frontend`  
+- **Build Command:** `npm install && npm run build`  
+- **Publish Directory:** `build`  
+- Set `REACT_APP_API_URL` to your backend URL (e.g. `https://your-backend.onrender.com`)
+
+---
+
+## Project Structure
+
+```
+chainops-ai/
+├── frontend/           # React app
+│   └── src/
+│       ├── components/ # Home, Dashboard, GlobalShippingMap, etc.
+│       ├── context/    # DashboardContext
+│       └── config.js   # API URL
+├── backend/            # FastAPI app
+│   ├── main.py         # API routes
+│   ├── agents/         # Assistant, Political Risk, Route Planner, etc.
+│   ├── data/           # Ports, AIS sample, logistics regions
+│   └── services/       # News fetching, NLP
+└── README.md
 ```
 
-## 📱 Usage
+---
 
-### Dashboard
+## Thinking Logs (Developer)
 
-- View global risk heatmap
-- See real-time political and schedule risks
-- Interact with chat assistant
-- Monitor risk trends with charts
+Thinking Logs are available for debugging and demos:
 
-### Chat Assistant
+- Direct URL: `/thinking-logs`  
+- Enable in nav: set `chainops-ai-developer-mode=true` in localStorage, or add `?dev=1` to the URL
 
-Ask natural language questions like:
+---
 
-- "What are the political risks?"
-- "Which equipment has delivery delays?"
-- "Show me the risk summary"
-- "Generate a comprehensive report"
+## License
 
-### Reports
-
-- View all generated reports
-- Filter by type and search
-- Download PDF reports
-- Track report history
-
-### Thinking Logs
-
-- Monitor AI agent reasoning
-- View conversation history
-- Track decision-making process
-
-## 🔧 Development
-
-### Backend Development
-
-```bash
-cd backend
-python -m uvicorn main:app --reload --port 8000
-```
-
-### Frontend Development
-
-```bash
-cd frontend
-npm start
-```
-
-### Database Setup
-
-The application uses MongoDB but falls back to file storage if unavailable. For production:
-
-1. Install MongoDB locally or use MongoDB Atlas free tier
-2. Update `MONGODB_URI` in `.env`
-3. The app will automatically create necessary indexes
-
-## 📊 Sample Data
-
-The application includes sample data for demonstration:
-
-- Equipment schedules with various delay scenarios
-- Political risk events for major countries
-- Risk assessments and recommendations
-
-## 🎯 Key Features
-
-### Risk Assessment
-
-- **Political Risks**: Trade policies, sanctions, labor disputes
-- **Schedule Risks**: Delivery delays, timeline impacts
-- **Combined Analysis**: Integrated risk scoring
-
-### Visualization
-
-- **World Map**: Color-coded risk levels by country
-- **Charts**: Risk distribution and trend analysis
-- **Tables**: Detailed risk breakdowns with citations
-
-### Reporting
-
-- **PDF Generation**: Professional risk reports
-- **Multiple Formats**: Political, schedule, and combined reports
-- **Downloadable**: Easy sharing and archiving
-
-## 🔒 Security & Privacy
-
-- All API calls use HTTPS
-- No sensitive data stored permanently
-- Session-based data management
-- Free-tier APIs only (no credit card required)
-
-## 🤝 Contributing
-
-This is a proof-of-concept project. Contributions welcome for:
-
-- Additional risk data sources
-- Enhanced visualization features
-- New agent capabilities
-- UI/UX improvements
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
-## 🆘 Support
-
-For issues or questions:
-
-1. Check the sample data is loading correctly
-2. Verify API keys are properly configured
-3. Ensure MongoDB is running (or using file fallback)
-4. Check browser console for frontend errors
-5. Check backend logs for API errors
-
-## 🔮 Future Enhancements
-
-- Real-time data streaming
-- Advanced ML risk prediction
-- Integration with more data sources
-- Mobile-responsive design improvements
-- Multi-language support
-- Advanced reporting templates
+MIT License – see LICENSE for details.
