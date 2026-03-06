@@ -319,15 +319,6 @@ const GlobalShippingMap = ({ intelligenceData = {} }) => {
   return (
     <div className="w-full">
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        <button className={layerButtonClass(layers.routes)} onClick={() => toggleLayer("routes")}>
-          Show Shipping Routes
-        </button>
-        <button
-          className={layerButtonClass(layers.chokepoints)}
-          onClick={() => toggleLayer("chokepoints")}
-        >
-          Show Chokepoints
-        </button>
         <button
           className={layerButtonClass(layers.disruptions)}
           onClick={() => toggleLayer("disruptions")}

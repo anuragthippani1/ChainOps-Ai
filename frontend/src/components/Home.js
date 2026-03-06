@@ -162,7 +162,7 @@ const Home = () => {
               </div>
 
               <h1 className="text-5xl md:text-7xl font-extrabold mb-6 text-white drop-shadow-2xl leading-tight">
-                Maritime Intelligence Control Tower
+                ChainOps AI
               </h1>
 
               <p className="text-2xl md:text-3xl font-semibold text-gray-100 mb-6 drop-shadow-lg">
