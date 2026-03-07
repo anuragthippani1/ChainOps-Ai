@@ -68,3 +68,8 @@ reports_data/
 # Temporary files
 *.tmp
 *.temp
+
+# Local docs (keep locally, not on GitHub)
+DESIGN_DOCUMENTATION.md
+DESIGN_DOCUMENTATION_WIP.md
+DEPLOYMENT_INSTRUCTIONS.md
