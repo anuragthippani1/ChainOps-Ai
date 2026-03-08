@@ -1,7 +1,6 @@
 import React, { useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  Bell,
   Bot,
   ChevronRight,
   FileText,
@@ -9,7 +8,6 @@ import {
   LayoutDashboard,
   Moon,
   Route,
-  Search,
   Settings,
   Sun,
   Users,
@@ -88,20 +86,10 @@ const AppShell = ({ children }) => {
             ))}
           </div>
 
-          <div className="nm-inset nm-search-wrap">
-            <Search className="h-4 w-4 nm-subtext" />
-            <input className="nm-search" type="text" placeholder="Search route, country, or port..." />
-          </div>
-
           <div className="flex items-center gap-3">
             <button onClick={toggleTheme} className="nm-icon-btn" aria-label="Toggle theme">
               {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
             </button>
-            <button className="nm-icon-btn relative" aria-label="Notifications">
-              <Bell className="h-4 w-4" />
-              <span className="nm-pulse-dot" />
-            </button>
-            <div className="nm-avatar">CA</div>
           </div>
         </header>
 

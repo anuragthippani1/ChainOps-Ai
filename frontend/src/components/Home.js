@@ -124,8 +124,15 @@ const Home = () => {
         <div>
           <p className="nm-subtext text-sm mb-3">Maritime Intelligence - refreshed every 60s</p>
           <h1 className="nm-heading text-4xl md:text-5xl">ChainOps AI</h1>
-          <p className="nm-subtext mt-4 max-w-2xl">
-            Soft UI dashboard for route risk awareness, disruption monitoring, and operator decision support.
+          <p className="nm-heading text-xl md:text-2xl mt-4">AI-Powered Supply Chain Intelligence</p>
+          <p className="nm-subtext mt-3 max-w-3xl">
+            ChainOps AI is an intelligent shipping risk management platform that continuously monitors political
+            risks, supply chain disruptions, chokepoint pressure, and schedule delays across 100+ countries in
+            real time.
+          </p>
+          <p className="nm-subtext mt-2 max-w-3xl">
+            Use AI-assisted route analysis, automated risk reports, and instant alerts to make faster logistics
+            decisions and prevent costly delays before they impact cargo.
           </p>
         </div>
         <div className="flex gap-3 flex-wrap">
