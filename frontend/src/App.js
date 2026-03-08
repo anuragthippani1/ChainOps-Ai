@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import Navbar from "./components/Navbar";
+import AppShell from "./components/AppShell";
 import Home from "./components/Home";
 import Dashboard from "./components/Dashboard";
 import ChainOpsAIAssistantPage from "./components/ChainOpsAIAssistantPage";
@@ -13,15 +13,11 @@ import { ThemeProvider } from "./context/ThemeContext";
 import "./index.css";
 
 function App() {
-  const [currentPage, setCurrentPage] = useState("home");
-
   return (
     <ThemeProvider>
       <DashboardProvider>
         <Router>
-          <div className="min-h-screen bg-white dark:bg-gray-900 transition-colors">
-            <Navbar currentPage={currentPage} setCurrentPage={setCurrentPage} />
-
+          <AppShell>
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/dashboard" element={<Dashboard />} />
@@ -29,12 +25,9 @@ function App() {
               <Route path="/reports" element={<Reports />} />
               <Route path="/thinking-logs" element={<ThinkingLogs />} />
               <Route path="/session-manager" element={<SessionManagerPage />} />
-              <Route
-                path="/route-planner"
-                element={<MultiPortRoutePlanner />}
-              />
+              <Route path="/route-planner" element={<MultiPortRoutePlanner />} />
             </Routes>
-          </div>
+          </AppShell>
         </Router>
       </DashboardProvider>
     </ThemeProvider>
