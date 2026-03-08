@@ -45,7 +45,6 @@ const AppShell = ({ children }) => {
           <img src="/logo.png" alt="ChainOps AI Logo" className="h-10 w-10 rounded-2xl" />
           <div>
             <p className="nm-heading text-lg">ChainOps AI</p>
-            <p className="nm-subtext text-xs">Maritime Intelligence</p>
           </div>
         </Link>
 
