@@ -2106,6 +2106,51 @@ async def plan_multi_port_route(request: Dict[str, Any]):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/route/what-if")
+async def simulate_route_what_if(request: Dict[str, Any]):
+    """
+    Run route what-if simulation with mitigation recommendations.
+
+    Request body:
+    {
+        "ports": ["Port1", "Port2", ...],
+        "optimization": "fastest|cheapest|balanced|safest",
+        "scenario": "suez_closure|red_sea_escalation|port_strike",
+        "target_port": "optional - used for port_strike"
+    }
+    """
+    try:
+        ports = request.get("ports", [])
+        optimization = request.get("optimization", "balanced")
+        scenario = request.get("scenario", "suez_closure")
+        target_port = request.get("target_port")
+
+        if not isinstance(ports, list) or len([p for p in ports if str(p).strip()]) < 2:
+            raise HTTPException(status_code=400, detail="At least 2 ports are required")
+
+        simulation = route_planner_agent.simulate_what_if(
+            ports=ports,
+            optimization=optimization,
+            scenario=scenario,
+            target_port=target_port,
+        )
+
+        if "error" in simulation:
+            raise HTTPException(status_code=400, detail=simulation["error"])
+
+        return {
+            "success": True,
+            **simulation,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/route/optimize-order")
 async def optimize_route_order(request: Dict[str, Any]):
     """

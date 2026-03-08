@@ -1,4 +1,5 @@
 import math
+import copy
 from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime, timedelta
 import sys
@@ -642,6 +643,362 @@ class RoutePlannerAgent:
                 alternatives.append(alt_route)
         
         return alternatives[:3]  # Return max 3 alternatives
+
+    def _safe_risk_score(self, route_analysis: Dict[str, Any]) -> float:
+        """Extract a route-level risk score with fallback order."""
+        for key in ["final_risk_score", "overall_risk_score", "operational_risk_score"]:
+            value = route_analysis.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        return 1.0
+
+    def _apply_what_if_scenario(
+        self,
+        simulated: Dict[str, Any],
+        scenario: str,
+        target_port: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Apply scenario stress adjustments to a planned route.
+        Returns scenario impact metadata.
+        """
+        scenario_id = (scenario or "suez_closure").strip().lower()
+        legs = simulated.get("legs") or []
+        summary = simulated.get("summary") or {}
+
+        total_eta_delta = 0.0
+        total_cost_delta = 0.0
+        risk_delta = 0.0
+        notes: List[str] = []
+        impacted_legs: List[int] = []
+        resolved_target = None
+
+        def mark_leg(idx: int, eta_add: float, cost_add: float, forced_risk: Optional[str] = None):
+            nonlocal total_eta_delta, total_cost_delta
+            leg = legs[idx]
+            leg["total_time_days"] = round(float(leg.get("total_time_days", 0.0)) + eta_add, 2)
+            leg["total_cost_usd"] = round(float(leg.get("total_cost_usd", 0.0)) + cost_add, 2)
+            if isinstance(leg.get("port_wait_time_days"), (int, float)):
+                leg["port_wait_time_days"] = round(float(leg["port_wait_time_days"]) + max(0.0, eta_add * 0.45), 2)
+            if forced_risk:
+                leg["risk_level"] = forced_risk
+            impacted_legs.append(idx)
+            total_eta_delta += eta_add
+            total_cost_delta += cost_add
+
+        if scenario_id == "suez_closure":
+            suz_legs = [
+                idx for idx, leg in enumerate(legs)
+                if leg.get("canal_name") == "Suez Canal"
+                or any((cp or {}).get("name") == "Suez Canal" for cp in (leg.get("chokepoints_nearby") or []))
+            ]
+            if suz_legs:
+                for idx in suz_legs:
+                    mark_leg(idx, eta_add=4.5, cost_add=85000.0, forced_risk="critical")
+                risk_delta = 1.1
+                notes.append("Suez Canal unavailable. Route segments crossing Suez are rerouted around Cape lanes.")
+            else:
+                total_eta_delta = 1.2
+                total_cost_delta = 25000.0
+                risk_delta = 0.3
+                notes.append("No direct Suez crossing, but regional congestion and insurance premiums increase.")
+
+        elif scenario_id == "red_sea_escalation":
+            red_sea_cp = {"Bab el-Mandeb", "Suez Canal", "Strait of Hormuz"}
+            hit_legs = []
+            for idx, leg in enumerate(legs):
+                nearby = {cp.get("name") for cp in (leg.get("chokepoints_nearby") or []) if isinstance(cp, dict)}
+                if red_sea_cp.intersection(nearby):
+                    hit_legs.append(idx)
+            if hit_legs:
+                for idx in hit_legs:
+                    mark_leg(idx, eta_add=2.0, cost_add=42000.0, forced_risk="critical")
+                risk_delta = 0.9
+                notes.append("Escalation near Red Sea chokepoints adds convoy delays and security surcharges.")
+            else:
+                total_eta_delta = 0.8
+                total_cost_delta = 18000.0
+                risk_delta = 0.25
+                notes.append("Indirect impact from market-wide security and fuel premiums.")
+
+        elif scenario_id == "port_strike":
+            resolved_target = target_port
+            if resolved_target:
+                target_match = get_port_by_name(resolved_target)
+                resolved_target = target_match["name"] if target_match else resolved_target
+            if not resolved_target and legs:
+                resolved_target = legs[-1].get("to")
+
+            strike_legs = [
+                idx for idx, leg in enumerate(legs)
+                if leg.get("from") == resolved_target or leg.get("to") == resolved_target
+            ]
+            if strike_legs:
+                for idx in strike_legs:
+                    mark_leg(idx, eta_add=2.8, cost_add=38000.0, forced_risk="high")
+                risk_delta = 0.7
+                notes.append(f"Labor disruption at {resolved_target} increases berth wait and handling costs.")
+            else:
+                total_eta_delta = 0.6
+                total_cost_delta = 12000.0
+                risk_delta = 0.2
+                notes.append("No direct port strike on route legs, minor network ripple delays applied.")
+
+        else:
+            notes.append("Unknown scenario selected. Baseline route returned without stress adjustments.")
+
+        base_eta = float(simulated.get("estimated_time", summary.get("total_time_days", 0.0)) or 0.0)
+        base_cost = float(
+            ((simulated.get("cost_estimation") or {}).get("total_cost_usd"))
+            or summary.get("total_cost_usd", 0.0)
+            or 0.0
+        )
+        base_risk = self._safe_risk_score(simulated)
+
+        new_eta = round(base_eta + total_eta_delta, 2)
+        new_cost = round(base_cost + total_cost_delta, 2)
+        new_risk = round(min(5.0, max(1.0, base_risk + risk_delta)), 2)
+
+        simulated["estimated_time"] = new_eta
+        simulated["final_risk_score"] = new_risk
+        simulated["overall_risk_score"] = new_risk
+        simulated["operational_risk_score"] = max(
+            float(simulated.get("operational_risk_score", 1.0) or 1.0),
+            round(min(5.0, max(1.0, float(simulated.get("operational_risk_score", 1.0) or 1.0) + (risk_delta * 0.7))), 2),
+        )
+        simulated["risk_level"] = self._risk_label_from_score(new_risk)
+
+        if isinstance(simulated.get("cost_estimation"), dict):
+            simulated["cost_estimation"]["total_cost_usd"] = new_cost
+
+        summary["total_time_days"] = new_eta
+        summary["total_cost_usd"] = new_cost
+        summary["scenario_notes"] = notes
+        simulated["summary"] = summary
+        simulated["scenario_notes"] = notes
+
+        return {
+            "scenario_id": scenario_id,
+            "eta_delta_days": round(total_eta_delta, 2),
+            "cost_delta_usd": round(total_cost_delta, 2),
+            "risk_delta": round(new_risk - base_risk, 2),
+            "impacted_legs": impacted_legs,
+            "target_port": resolved_target,
+            "notes": notes,
+        }
+
+    def _get_scenario_meta(self, scenario: str) -> Dict[str, str]:
+        scenario_id = (scenario or "suez_closure").strip().lower()
+        catalog = {
+            "suez_closure": {
+                "name": "Suez Canal Closure",
+                "description": "Simulates Suez blockage and reroute/insurance impacts.",
+            },
+            "red_sea_escalation": {
+                "name": "Red Sea Security Escalation",
+                "description": "Simulates risk and delay spikes across Red Sea-linked chokepoints.",
+            },
+            "port_strike": {
+                "name": "Major Port Strike",
+                "description": "Simulates operational disruptions from labor actions at a target port.",
+            },
+        }
+        meta = catalog.get(scenario_id, {"name": "Custom Scenario", "description": "Custom simulation scenario"})
+        return {"id": scenario_id, **meta}
+
+    def _recommended_mitigations(
+        self,
+        scenario: str,
+        impact: Dict[str, Any],
+        route: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        scenario_id = (scenario or "").strip().lower()
+        mitigations: List[Dict[str, Any]] = []
+
+        def add_mitigation(
+            mitigation_id: str,
+            title: str,
+            description: str,
+            priority: str,
+            risk_reduction: float,
+            eta_days_change: float,
+            cost_usd_change: float,
+            tradeoffs: str,
+            action_plan: List[str],
+        ):
+            impact_score = round((risk_reduction * 2.0) - (max(0.0, eta_days_change) * 0.2) - (max(0.0, cost_usd_change) / 100000.0), 2)
+            mitigations.append({
+                "id": mitigation_id,
+                "title": title,
+                "description": description,
+                "priority": priority,
+                "expected_impact": {
+                    "risk_reduction": round(risk_reduction, 2),
+                    "eta_days_change": round(eta_days_change, 2),
+                    "cost_usd_change": round(cost_usd_change, 2),
+                },
+                "impact_score": impact_score,
+                "tradeoffs": tradeoffs,
+                "action_plan": action_plan,
+            })
+
+        if scenario_id == "suez_closure":
+            add_mitigation(
+                "reroute_cape",
+                "Reroute via Cape of Good Hope",
+                "Shift affected legs away from Suez and rebalance transit windows.",
+                "high",
+                risk_reduction=0.9,
+                eta_days_change=2.8,
+                cost_usd_change=62000,
+                tradeoffs="Longer sailing distance and higher fuel burn.",
+                action_plan=["Re-issue voyage plan with Cape lane", "Pre-book bunkering at Cape Town", "Notify downstream terminal operators"],
+            )
+            add_mitigation(
+                "split_cargo",
+                "Split Cargo Across Parallel Services",
+                "Allocate critical loads to alternate vessels/routes to reduce concentration risk.",
+                "high",
+                risk_reduction=0.75,
+                eta_days_change=1.1,
+                cost_usd_change=38000,
+                tradeoffs="Requires vessel coordination and cargo fragmentation.",
+                action_plan=["Tag priority SKUs", "Assign expedited lot to alternate loop", "Consolidate non-urgent shipments"],
+            )
+
+        elif scenario_id == "red_sea_escalation":
+            add_mitigation(
+                "security_convoy",
+                "Adopt Security Corridor + Convoy Scheduling",
+                "Use escorted windows and tighten transit timing through exposed segments.",
+                "high",
+                risk_reduction=0.7,
+                eta_days_change=0.9,
+                cost_usd_change=24000,
+                tradeoffs="Higher security/insurance fees.",
+                action_plan=["Book convoy slot", "Increase onboard security protocol", "Update insurer with mitigation controls"],
+            )
+            add_mitigation(
+                "safest_profile",
+                "Switch Optimization to Safest Profile",
+                "Reduce exposure by favoring safer legs and reliable ports.",
+                "medium",
+                risk_reduction=0.55,
+                eta_days_change=1.3,
+                cost_usd_change=18000,
+                tradeoffs="Slightly slower ETA.",
+                action_plan=["Re-plan route with safest profile", "Reconfirm ETA commitments", "Trigger customer advisories"],
+            )
+
+        elif scenario_id == "port_strike":
+            target_port = impact.get("target_port") or (route.get("ports") or [None])[-1]
+            add_mitigation(
+                "alternate_port",
+                "Shift to Alternate Gateway Port",
+                f"Temporarily reroute calls from {target_port} to a nearby alternate hub.",
+                "high",
+                risk_reduction=0.8,
+                eta_days_change=-0.6,
+                cost_usd_change=22000,
+                tradeoffs="Possible inland drayage uplift from alternate terminal.",
+                action_plan=["Select nearest backup port", "Re-book berth and customs slots", "Issue revised inland transfer plan"],
+            )
+            add_mitigation(
+                "buffer_inventory",
+                "Build Buffer Inventory for Critical Orders",
+                "Protect service continuity by buffering demand near destination markets.",
+                "medium",
+                risk_reduction=0.45,
+                eta_days_change=0.0,
+                cost_usd_change=15000,
+                tradeoffs="Working-capital and storage overhead.",
+                action_plan=["Identify top-priority SKUs", "Pre-position inventory at DC", "Activate exception replenishment cadence"],
+            )
+
+        # Common mitigations for every scenario.
+        add_mitigation(
+            "dynamic_alerting",
+            "Enable 6-hour Dynamic Alerting",
+            "Increase monitoring frequency to trigger faster operational responses.",
+            "medium",
+            risk_reduction=0.35,
+            eta_days_change=0.0,
+            cost_usd_change=4000,
+            tradeoffs="More operational noise for teams.",
+            action_plan=["Set alert threshold to risk >= 4", "Assign on-call owner", "Run daily mitigation stand-up"],
+        )
+        add_mitigation(
+            "insurance_review",
+            "Review War/Delay Insurance Coverage",
+            "Reduce downside by adjusting policy clauses for current corridor conditions.",
+            "medium",
+            risk_reduction=0.25,
+            eta_days_change=0.0,
+            cost_usd_change=8000,
+            tradeoffs="Short-term premium increase.",
+            action_plan=["Audit current policy terms", "Request temporary endorsement", "Map claims workflow to operations"],
+        )
+
+        mitigations.sort(key=lambda m: ({"high": 3, "medium": 2, "low": 1}.get(m["priority"], 0), m["impact_score"]), reverse=True)
+        return mitigations[:6]
+
+    def _build_snapshot(self, route_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        summary = route_analysis.get("summary", {}) if isinstance(route_analysis.get("summary"), dict) else {}
+        risk_score = self._safe_risk_score(route_analysis)
+        return {
+            "route": route_analysis.get("route"),
+            "risk_score": round(risk_score, 2),
+            "risk_level": self._risk_label_from_score(risk_score),
+            "eta_days": round(float(route_analysis.get("estimated_time", summary.get("total_time_days", 0.0)) or 0.0), 2),
+            "total_cost_usd": round(
+                float(
+                    ((route_analysis.get("cost_estimation") or {}).get("total_cost_usd"))
+                    or summary.get("total_cost_usd", 0.0)
+                    or 0.0
+                ),
+                2,
+            ),
+            "chokepoints": route_analysis.get("chokepoints", []) or [],
+        }
+
+    def simulate_what_if(
+        self,
+        ports: List[str],
+        optimization: str = "balanced",
+        scenario: str = "suez_closure",
+        target_port: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run a what-if simulation over a baseline route and return mitigation recommendations.
+        """
+        baseline = self.plan_multi_port_route(ports, optimization, include_alternatives=False)
+        if "error" in baseline:
+            return baseline
+
+        simulated = copy.deepcopy(baseline)
+        scenario_meta = self._get_scenario_meta(scenario)
+        impact = self._apply_what_if_scenario(simulated, scenario_meta["id"], target_port)
+        mitigations = self._recommended_mitigations(scenario_meta["id"], impact, simulated)
+
+        baseline_snapshot = self._build_snapshot(baseline)
+        simulated_snapshot = self._build_snapshot(simulated)
+
+        deltas = {
+            "risk_delta": round(simulated_snapshot["risk_score"] - baseline_snapshot["risk_score"], 2),
+            "eta_delta_days": round(simulated_snapshot["eta_days"] - baseline_snapshot["eta_days"], 2),
+            "cost_delta_usd": round(simulated_snapshot["total_cost_usd"] - baseline_snapshot["total_cost_usd"], 2),
+        }
+
+        return {
+            "scenario": scenario_meta,
+            "baseline": baseline_snapshot,
+            "simulated": simulated_snapshot,
+            "deltas": deltas,
+            "recommended_mitigations": mitigations,
+            "route_analysis": simulated,
+            "impact_details": impact,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
     
     def optimize_route_order(self, origin: str, destination: str, waypoints: List[str], 
                             optimization: str = "balanced") -> List[str]:
