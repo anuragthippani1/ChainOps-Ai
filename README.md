@@ -67,7 +67,7 @@ cp env.example .env
 Add to `backend/.env`:
 
 ```env
-# News (supply chain disruptions, political risk)
+# News (supply chain disruptions, political risks)
 NEWSAPI_KEY=
 MEDIASTACK_API_KEY=
 GNEWS_API_KEY=
