@@ -48,11 +48,17 @@ class MongoDBClient:
         """Store a risk report in the database"""
         try:
             print(f"Storing report {report.report_id}, database available: {self.db is not None}")
-            # Temporarily force file storage to debug the issue
-            print("Using file storage for debugging")
+            if self.db is not None:
+                report_dict = report.dict()
+                report_dict["_id"] = report.report_id
+                await self.db.reports.replace_one(
+                    {"report_id": report.report_id},
+                    report_dict,
+                    upsert=True,
+                )
+                return
+
             await self._store_report_to_file(report)
-            print(f"Report stored to file: {report.report_id}")
-                
         except Exception as e:
             print(f"Error storing report: {str(e)}")
             # Fallback to file storage
@@ -81,10 +87,15 @@ class MongoDBClient:
         """Get all reports (for reports page)"""
         try:
             print(f"Database connection status: {self.db is not None}")
-            # Temporarily force file storage to debug the issue
-            print("Using file storage for debugging")
+            if self.db is not None:
+                reports: List[Dict[str, Any]] = []
+                async for report in self.db.reports.find().sort("created_at", -1):
+                    report.pop("_id", None)
+                    reports.append(report)
+                if reports:
+                    return reports
+
             return await self._get_all_reports_from_files()
-                
         except Exception as e:
             print(f"Error getting all reports: {str(e)}")
             return []
@@ -92,7 +103,7 @@ class MongoDBClient:
     async def _store_report_to_file(self, report: RiskReport):
         """Fallback: Store report to file"""
         import os
-        reports_dir = "reports_data"
+        reports_dir = os.path.join(os.path.dirname(__file__), "..", "reports_data")
         if not os.path.exists(reports_dir):
             os.makedirs(reports_dir)
         
@@ -443,7 +454,7 @@ class MongoDBClient:
         """Fallback: Get session report count from files"""
         import os
         import glob
-        reports_dir = "reports_data"
+        reports_dir = os.path.join(os.path.dirname(__file__), "..", "reports_data")
         count = 0
         
         if os.path.exists(reports_dir):
