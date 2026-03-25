@@ -1331,30 +1331,52 @@ async def get_shipping_intelligence():
         top_risk_routes: List[Dict[str, Any]] = []
         routes_with_scores: List[tuple[float, Dict[str, Any]]] = []
 
+        def _safe_score(route_payload: Dict[str, Any]) -> float:
+            raw = route_payload.get("final_risk_score")
+            if raw is None:
+                raw = route_payload.get("overall_risk_score")
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return 1.0
+
         for r in route_reports:
-            route_analysis = r.get("route_analysis")
-            if isinstance(route_analysis, str):
-                try:
-                    route_analysis = json.loads(route_analysis)
-                except Exception:
+            try:
+                route_analysis = r.get("route_analysis")
+                if isinstance(route_analysis, str):
+                    try:
+                        route_analysis = json.loads(route_analysis)
+                    except Exception:
+                        route_analysis = {}
+                if not isinstance(route_analysis, dict):
                     route_analysis = {}
-            if not isinstance(route_analysis, dict):
-                route_analysis = {}
-            score = float(route_analysis.get("final_risk_score") or route_analysis.get("overall_risk_score") or 1)
-            if score >= 4:
-                high_risk_routes += 1
-            route_name = route_analysis.get("route") or " → ".join(route_analysis.get("ports", []))
-            summary = route_analysis.get("summary") or {}
-            routes_with_scores.append((score, {
-                "report_id": r.get("report_id"),
-                "route": route_name,
-                "risk_level": "critical" if score >= 4 else "high" if score >= 3 else "medium" if score >= 2 else "low",
-                "risk_score": round(score, 2),
-                "distance_nm": summary.get("total_distance_nm") or route_analysis.get("total_distance"),
-                "eta_days": summary.get("total_time_days") or route_analysis.get("estimated_time"),
-                "chokepoints": route_analysis.get("chokepoints") or [],
-                "created_at": r.get("created_at"),
-            }))
+
+                score = _safe_score(route_analysis)
+                if score >= 4:
+                    high_risk_routes += 1
+
+                ports = route_analysis.get("ports")
+                if not isinstance(ports, list):
+                    ports = []
+                route_name = route_analysis.get("route") or " → ".join([str(p) for p in ports if p])
+
+                summary = route_analysis.get("summary")
+                if not isinstance(summary, dict):
+                    summary = {}
+
+                routes_with_scores.append((score, {
+                    "report_id": r.get("report_id"),
+                    "route": route_name or "Route intelligence",
+                    "risk_level": "critical" if score >= 4 else "high" if score >= 3 else "medium" if score >= 2 else "low",
+                    "risk_score": round(score, 2),
+                    "distance_nm": summary.get("total_distance_nm") or route_analysis.get("total_distance"),
+                    "eta_days": summary.get("total_time_days") or route_analysis.get("estimated_time"),
+                    "chokepoints": route_analysis.get("chokepoints") or [],
+                    "created_at": r.get("created_at"),
+                }))
+            except Exception as route_parse_error:
+                print(f"Skipping malformed route report {r.get('report_id')}: {route_parse_error}")
+                continue
 
         routes_with_scores.sort(key=lambda x: x[0], reverse=True)
         top_risk_routes = [x[1] for x in routes_with_scores[:5]]
@@ -1362,8 +1384,12 @@ async def get_shipping_intelligence():
 
         chokepoint_alerts_count = 0
         for alert in disruption_alerts or []:
+            if not isinstance(alert, dict):
+                continue
             title = (alert.get("title") or "") + " " + (alert.get("description") or "")
-            signals = alert.get("risk_signals") or []
+            signals = alert.get("risk_signals")
+            if not isinstance(signals, list):
+                signals = []
             combined = title + " " + " ".join(s if isinstance(s, str) else "" for s in signals)
             if _chokepoint_mentioned_in_text(combined):
                 chokepoint_alerts_count += 1
